@@ -133,4 +133,6 @@ See the 2-day table in the gap analysis. Cut order if behind: Streamlit (use Swa
 - [x] M7 Docs package
       (4 Mermaid diagrams, 7 ADRs, DDD map, NFR matrix, OWASP 2025 table, TCO/ROI md + xlsx verified
       against Python, README. Manual step left: import diagrams into Excalidraw and export .excalidraw/PNG)
-- [ ] M8 Scenario run, demo script, rehearsal
+- [x] M8 Scenario run, demo script, rehearsal
+      (scripts/rehearse.py --crash: 12/12 live incl. SIGKILL mid-incident -> resumed; scripts/demo_prep.py;
+      docs/demo-script.md)

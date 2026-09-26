@@ -41,7 +41,7 @@ To use Claude, set `ANTHROPIC_API_KEY` and `LLM_MODE=live` in `.env`, then run `
 | `s05-direct-injection` | Injection in the alert → QUARANTINED before any LLM or tool call | Direct injection |
 | `s06-indirect-injection` | Clean alert, injection in fetched logs → QUARANTINED | Indirect injection |
 
-Run one from the terminal: `uv run python scripts/run_scenario.py s02-cache-bloat`. See the security checks live: `docker compose exec orchestrator python scripts/mcp_smoke.py`.
+Run one from the terminal: `uv run python scripts/run_scenario.py s02-cache-bloat`. Run everything against its ground truth: `uv run python scripts/rehearse.py --crash`. See the security checks live: `docker compose exec orchestrator python scripts/mcp_smoke.py`.
 
 ## Tests
 
@@ -60,6 +60,7 @@ docker run --rm -v "${PWD}\opa:/work:ro" openpolicyagent/opa:latest test /work/p
 | NFR matrix, with measured values | [`docs/nfr-matrix.md`](docs/nfr-matrix.md) |
 | Threat model: OWASP LLM Top 10 (2025) | [`docs/threat-model.md`](docs/threat-model.md) |
 | 3-year TCO / ROI + token economics | [`docs/financial/tco-roi-model.md`](docs/financial/tco-roi-model.md), [`.xlsx`](docs/financial/tco-roi-model.xlsx) |
+| Jury demo script, fallbacks, likely questions | [`docs/demo-script.md`](docs/demo-script.md) |
 | Target architecture (blueprint) | [`CapstoneProjectPlan_v2.md`](CapstoneProjectPlan_v2.md) |
 
 ## Built vs designed

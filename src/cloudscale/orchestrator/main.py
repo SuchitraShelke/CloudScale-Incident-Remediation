@@ -1,5 +1,6 @@
 """Orchestrator entrypoint: wires config, Postgres, Redis, MCP and the graph into the API."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -67,6 +68,9 @@ async def lifespan(app: FastAPI):
         app.state.ledger = TokenLedger(pool)
         app.state.service = IncidentService(build_graph(deps, saver), register_sim, Path(s.scenarios_dir),
                                             PgIncidentStore(pool), app.state.audit, app.state.ledger)
+        # Load the embedding model now (first load ~20 s on the dev VM) instead of on the first incident.
+        warm = asyncio.create_task(deps.cache.embedder.embed("warm up"))
+        warm.add_done_callback(lambda t: log.info("embedding model warm: %s", "ok" if not t.exception() else t.exception()))
         resumed = await app.state.service.resume_in_flight()
         if resumed:
             log.info("resumed in-flight incidents after restart: %s", resumed)
