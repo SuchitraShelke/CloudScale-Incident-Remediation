@@ -1,0 +1,21 @@
+{
+  "limits": {
+    "max_calls_per_minute": 30
+  },
+  "op_classes": {
+    "apply_hotfix": "DESTRUCTIVE",
+    "clear_pod_cache": "SAFE_MUTATION",
+    "fetch_k8s_logs": "READ",
+    "get_deployment_status": "READ",
+    "get_metrics": "READ",
+    "restart_service": "DISRUPTIVE",
+    "rollback_deployment": "DESTRUCTIVE"
+  },
+  "op_rank": {
+    "DESTRUCTIVE": 3,
+    "DISRUPTIVE": 2,
+    "MANUAL": 4,
+    "READ": 0,
+    "SAFE_MUTATION": 1
+  }
+}

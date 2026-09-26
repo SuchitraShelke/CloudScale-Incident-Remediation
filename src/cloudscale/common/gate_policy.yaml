@@ -1,0 +1,43 @@
+# Single source of truth for the HITL gate. Loaded by the gate (orchestrator) and compiled into
+# OPA data by scripts/gen_opa_data.py. Change it here only.
+
+op_classes:
+  get_metrics: READ
+  fetch_k8s_logs: READ
+  get_deployment_status: READ
+  clear_pod_cache: SAFE_MUTATION
+  restart_service: DISRUPTIVE
+  apply_hotfix: DESTRUCTIVE
+  rollback_deployment: DESTRUCTIVE
+
+op_rank: {READ: 0, SAFE_MUTATION: 1, DISRUPTIVE: 2, DESTRUCTIVE: 3, MANUAL: 4}
+
+# Confidence tiers are half-open: [lower, next lower). "high" = [0.80, 1.00].
+confidence_tiers: {high: 0.80, medium: 0.60, low: 0.40}
+
+matrix:            # tier -> gate, per op class (REVIEW from the blueprint maps to APPROVAL here)
+  SAFE_MUTATION: {high: AUTO,     medium: AUTO,     low: APPROVAL,   very_low: ESCALATION}
+  DISRUPTIVE:    {high: AUTO,     medium: APPROVAL, low: APPROVAL,   very_low: ESCALATION}
+  DESTRUCTIVE:   {high: APPROVAL, medium: APPROVAL, low: ESCALATION, very_low: ESCALATION}
+
+cache_confidence_cap: 0.79     # a cached RCA can never produce AUTO for DISRUPTIVE
+
+# Financial-impact trigger: impact = revenue_per_minute(service) x disruption_minutes(op class).
+financial:
+  approval_above_usd: 10000
+  escalation_above_usd: 50000
+  disruption_minutes: {READ: 0, SAFE_MUTATION: 0, DISRUPTIVE: 1, DESTRUCTIVE: 5, MANUAL: 0}
+  revenue_per_minute_usd:
+    payment-service: 12000
+    orders-service: 1500
+    api-gateway: 3000
+    image-resizer: 50
+    default: 500
+
+# Deterministic risk level (never from the LLM).
+risk:
+  critical_alerts: [AZNetworkPartition, RegionOutage, ClusterControlPlaneDown]
+  tier1_services: [payment-service, api-gateway]
+
+limits:
+  max_calls_per_minute: 30

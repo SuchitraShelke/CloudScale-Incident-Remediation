@@ -1,0 +1,41 @@
+{
+  "scenario_id": "s02-cache-bloat",
+  "description": "Unbounded in-process cache in image-resizer. clear_pod_cache is SAFE_MUTATION -> AUTO. Re-run shows a semantic cache hit.",
+  "incident": {
+    "incident_id": "INC-S02",
+    "title": "Memory climbing steadily in image-resizer",
+    "severity": "P2",
+    "alert_name": "ContainerMemoryHigh",
+    "affected_service": "image-resizer",
+    "namespace": "media",
+    "cloud_provider": "azure",
+    "cloud_region": "westeurope",
+    "telemetry": {"source": "datadog", "cpu_usage_pct": 38.0, "memory_usage_pct": 91.5,
+                  "error_rate_pct": 2.1, "request_latency_p99_ms": 900, "pod_restarts_last_1h": 0},
+    "log_excerpt": "2026-09-26T09:02:11Z WARN image-resizer: thumbnail cache size 1.8GiB (entries=412339), no eviction policy configured\n2026-09-26T09:02:40Z WARN image-resizer: GC pause 1.2s",
+    "tags": ["kubernetes", "memory", "cache"]
+  },
+  "simulation": {
+    "deployments": {
+      "image-resizer": {"replicas": 4, "revision": 22, "previous_revision": 21, "image_tag": "v1.4.0",
+                        "resources": {"limits": {"memory": "2Gi", "cpu": "500m"}}, "connection_pool_max_size": 10}
+    },
+    "initial_metrics": {"cpu_usage_pct": 38.0, "memory_usage_pct": 91.5, "error_rate_pct": 2.1, "p99_ms": 900},
+    "healthy_thresholds": {"memory_usage_pct": 80, "error_rate_pct": 1, "p99_ms": 500},
+    "logs": [
+      "2026-09-26T09:01:30Z INFO image-resizer: thumbnail cache size 1.7GiB (entries=398112)",
+      "2026-09-26T09:02:11Z WARN image-resizer: thumbnail cache size 1.8GiB (entries=412339), no eviction policy configured",
+      "2026-09-26T09:02:40Z WARN image-resizer: GC pause 1.2s"
+    ],
+    "effects": [
+      {"when": {"tool": "clear_pod_cache"},
+       "then": {"recover_to": {"memory_usage_pct": 42, "error_rate_pct": 0.2, "p99_ms": 180}, "over_seconds": 15}}
+    ]
+  },
+  "ground_truth": {
+    "root_cause_category": "unbounded_cache",
+    "expected_actions": ["clear_pod_cache"],
+    "expected_gate": "AUTO",
+    "expected_final_status": "RESOLVED"
+  }
+}

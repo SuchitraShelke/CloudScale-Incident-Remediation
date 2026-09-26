@@ -1,0 +1,41 @@
+Executive Summary & Context 
+Welcome to the culminating hands-on challenge of the AI for Technical Architects masterclass. Over the past four days, you have explored advanced agentic patterns, protocol abstractions, enterprise security boundaries, and token financial modeling:
+Day 1: Multi-Agent Topologies (P2P, Hierarchical, Swarm), State Sharing, Circuit Breakers, and Polyglot Orchestration.
+Day 2: Protocol Standards (MCP vs UTCP, A2A, A2UI), Human-in-the-Loop (HITL) Decision Gates, and Audit Log Schemes.
+Day 3: Cloud Agent Infrastructure, Guardrail Middleware (LlamaGuard, Guardrails AI), Threat Modeling (Prompt Injections, Tool Abuse), and Zero-Trust Tooling.
+Day 4: Token Economics, Semantic Caching, Model Routing (Latency vs. Cost vs. Accuracy), and 3-Year TCO/ROI Financial Modeling.
+This 90-to-100-minute Capstone exercise requires your pod (~8 architects and technical leads) to synthesize these capabilities into an enterprise-grade architectural blueprint, functional prototype, and financial rationale.
+
+
+2. Evaluation Framework & Scoring Rubric
+Your team’s solution will be evaluated by the jury during the Capstone Jury Defense across four equally weighted parameters (
+ each):
++-----------------------------------------------------------------------------------+|                            CAPSTONE EVALUATION MATRIX                             
+|+--------------------------+--------------------------+-----------------------------+| Parameter                 | Weight 	| Focus Area                                  
+|+--------------------------+--------+---------------------------------------------+|
+1. Core Integration Path  | 25%    | Topology, Orchestration, MCP, Circuit-Breaker
+|| 2. Telemetry & Audit     | 25%    | OpenTelemetry, Audit Schema, Observability 
+ || 3. Contract Compliance    | 25%    | HITL Gates, Guardrails, DDD Contexts, NFRs 
+|| 4. Engineering Package   | 25%    | Functional Code, Excalidraw, ADRs, TCO/ROI  |+--------------------------+--------+---------------------------------------------+
+Detailed Evaluation Rubric
+1. Core Integration Path (
+)
+Multi-Agent Orchestration: Clear separation of responsibilities among agents (e.g., Planner, Executor, Evaluator) using an appropriate topology (Hierarchical or P2P).
+Protocol & Tool Integration: Secure usage of Model Context Protocol (MCP) or API interfaces to communicate with backend tools and external services.
+State Management & Resilience: Robust handling of distributed state (e.g., Redis/Vector DB), agent retries, fallback routes, and circuit breaker logic for failed tool calls.
+2. Telemetry & Observability (
+)
+Traceability: Distributed tracing spanning user requests, agent reasoning loops, tool calls, and LLM requests (e.g., OpenTelemetry/LangSmith schema).
+Auditability: Immutable logging of agent decisions, tool invocation arguments, and state transitions for compliance and post-mortem analysis.
+Metrics: Tracking key metrics including Latency Per Task (), Token Consumption Rate (), Cache Hit Ratio (), and Tool Failure Rate ().
+3. Business Contract Compliance & Governance (
+)
+HITL Decision Gates: Explicit human escalation paths triggered by risk thresholds (e.g., financial value thresholds, policy violations, confidence score ).
+Guardrails & Security: Multi-layered defense against indirect prompt injections, data exfiltration, and unauthorized privileges using Guardrails SDKs / LlamaGuard.
+Domain Alignment (DDD): Clean alignment with Bounded Contexts, mapping agent capabilities explicitly to Core vs. Supporting Domain services.
+4. Engineering Package Delivery (
+)
+Functional Code Artifacts: A working multi-agent orchestrator repository containing runnable MCP server endpoints, HITL gates, and guardrail middlewares in Python, Java, or .NET.
+Visual Architecture & Workflow: High-fidelity Excalidraw/C4 diagrams detailing top-level system architecture, component boundaries, and agent sequence interactions.
+Architectural Decision Records (ADRs): Concise ADRs documenting choices on agent topology, caching, protocol selections, and cloud deployment targets.
+Financial Model & NFR Matrix: Quantified 3-Year TCO and ROI projections detailing token optimization strategies (e.g., Semantic Caching, Tiered Model Routing).

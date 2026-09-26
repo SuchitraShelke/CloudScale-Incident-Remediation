@@ -1,0 +1,29 @@
+# Runbook catalogue: deterministic evidence for triage. The LLM's confidence is capped by the
+# evidence score computed from these entries (composite confidence = min(llm, evidence)).
+#   signature matched AND metrics corroborate -> 0.90
+#   signature matched only                     -> 0.65
+#   no catalogue match                         -> 0.35
+
+evidence_scores: {corroborated: 0.90, signature_only: 0.65, no_match: 0.35}
+
+# Evaluator SLOs: a service is healthy when every metric is below its threshold.
+slo_defaults: {memory_usage_pct: 80, error_rate_pct: 1, p99_ms: 500}
+
+runbooks:
+  - id: RB-MEM-OOM
+    root_cause_category: memory_limit_too_low
+    signatures: ['OOMKilled', 'java\.lang\.OutOfMemoryError']
+    corroborate: {metric: memory_usage_pct, above: 90}
+  - id: RB-CACHE-BLOAT
+    root_cause_category: unbounded_cache
+    signatures: ['cache size [0-9.]+GiB.*no eviction', 'no eviction policy configured']
+    corroborate: {metric: memory_usage_pct, above: 85}
+  - id: RB-DB-POOL
+    root_cause_category: connection_pool_too_small
+    signatures: ['Connection is not available', 'HikariPool-[0-9]+ .*waiting=[0-9]+', 'pool exhausted']
+    corroborate: {metric: p99_ms, above: 2000}
+  - id: RB-AZ-FAILOVER
+    root_cause_category: az_network_partition
+    manual: true
+    signatures: ['dial tcp .*: i/o timeout', 'unreachable from \S+']
+    corroborate: {metric: error_rate_pct, above: 20}

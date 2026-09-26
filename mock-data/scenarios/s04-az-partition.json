@@ -1,0 +1,38 @@
+{
+  "scenario_id": "s04-az-partition",
+  "description": "AZ-level network partition. No autonomous tool exists for failover: manual runbook -> ESCALATION, risk CRITICAL.",
+  "incident": {
+    "incident_id": "INC-S04",
+    "title": "api-gateway unreachable from us-east-1b",
+    "severity": "P1",
+    "alert_name": "AZNetworkPartition",
+    "affected_service": "api-gateway",
+    "namespace": "edge",
+    "cloud_provider": "aws",
+    "cloud_region": "us-east-1",
+    "telemetry": {"source": "prometheus", "cpu_usage_pct": 22.0, "memory_usage_pct": 40.0,
+                  "error_rate_pct": 34.0, "request_latency_p99_ms": 12000, "pod_restarts_last_1h": 0},
+    "log_excerpt": "2026-09-26T12:01:10Z ERROR api-gw-b1: dial tcp 10.0.2.14:8443: i/o timeout\n2026-09-26T12:01:10Z ERROR api-gw-b2: dial tcp 10.0.2.14:8443: i/o timeout\n2026-09-26T12:01:12Z WARN node-exporter: 10.0.2.0/24 unreachable from 10.0.1.0/24",
+    "tags": ["network", "availability-zone", "edge"]
+  },
+  "simulation": {
+    "deployments": {
+      "api-gateway": {"replicas": 9, "revision": 8, "previous_revision": 7, "image_tag": "v3.1.4",
+                      "resources": {"limits": {"memory": "1Gi", "cpu": "1000m"}}, "connection_pool_max_size": 100}
+    },
+    "initial_metrics": {"cpu_usage_pct": 22.0, "memory_usage_pct": 40.0, "error_rate_pct": 34.0, "p99_ms": 12000},
+    "healthy_thresholds": {"memory_usage_pct": 80, "error_rate_pct": 1, "p99_ms": 500},
+    "logs": [
+      "2026-09-26T12:01:10Z ERROR api-gw-b1: dial tcp 10.0.2.14:8443: i/o timeout",
+      "2026-09-26T12:01:11Z ERROR api-gw-a3: upstream 10.0.2.21 connect timeout",
+      "2026-09-26T12:01:12Z WARN node-exporter: 10.0.2.0/24 unreachable from 10.0.1.0/24"
+    ],
+    "effects": []
+  },
+  "ground_truth": {
+    "root_cause_category": "az_network_partition",
+    "expected_actions": ["manual_runbook:RB-AZ-FAILOVER"],
+    "expected_gate": "ESCALATION",
+    "expected_final_status": "ESCALATED"
+  }
+}
