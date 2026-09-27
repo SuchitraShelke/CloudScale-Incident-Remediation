@@ -18,6 +18,8 @@ x-app: &app
     OTEL_ENDPOINT: http://jaeger:4317
     OTEL_METRICS_ENDPOINT: http://prometheus:9090/api/v1/otlp/v1/metrics
     PROMETHEUS_URL: http://prometheus:9090
+    HITL_PROMOTE_AFTER_S: ${HITL_PROMOTE_AFTER_S:-120}   # demo profile: 2 min (production default 10 min)
+    HITL_EXPIRE_AFTER_S: ${HITL_EXPIRE_AFTER_S:-240}     # demo profile: 4 min (production default 30 min)
     BREAKER_THRESHOLD: ${BREAKER_THRESHOLD:-1}   # demo profile: one failure opens the breaker
     GUARD_TIMEOUT_S: ${GUARD_TIMEOUT_S:-20}   # LlamaGuard rarely answers on the dev VM; fail fast
     AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:-audit-writer-dev}

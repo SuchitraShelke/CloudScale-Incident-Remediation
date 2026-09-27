@@ -32,6 +32,8 @@ Timings are from the live OpenAI rehearsals on the dev VM (`scripts/rehearse.py 
 
 **Optional, and a strong answer to "what if a new incident comes?":** open **Report incident**, let a jury member change the title, service or log lines (or keep the pre-filled Kafka backlog), and submit. Say: *"It's never seen this. It still diagnoses it and proposes a plan, but no runbook matches, so confidence is capped at 0.35 and a senior SRE must decide. It won't act alone on something it can't ground in known evidence."* If they paste an injection into the log lines, it's quarantined.
 
+**Optional, and a strong answer to "what if nobody approves?":** start **s01** and don't decide. In the Approvals tab the row shows *escalates in 1m…*; after 2 minutes it moves to the senior queue (`HITL_PROMOTED` by `system:hitl-timer` in the audit log). Say: *"Silence is never consent. The timer escalates, then expires; it never approves. After expiry nothing runs, the metrics are re-checked, and the on-call gets a hand-off that says exactly what changed: nothing."* Then, as `sre1`, open the escalated incident, fill in **Record fix**; if the metrics are healthy it drafts an `RB-PROPOSED-…` runbook for review (Approvals tab, bottom).
+
 Optional if there's time: the crash demo. Start s02 and, while it's verifying, run `docker compose kill -s SIGKILL orchestrator`, then `docker compose up -d --no-deps orchestrator` (only the orchestrator; the simulator keeps its state in memory in the MCP server). The incident resumes from its checkpoint and resolves, and `INCIDENT_RESUMED` appears in the audit log.
 
 ## If something goes wrong
@@ -42,7 +44,7 @@ Optional if there's time: the crash demo. Start s02 and, while it's verifying, r
 | Docker returns "500 Internal Server Error for API route" | Quit Docker Desktop, `wsl --shutdown`, start Docker Desktop again (≈2 min) |
 | A scenario behaves unexpectedly | `scripts/fault.py reset`, then re-run; `scripts/run_scenario.py <id>` prints the full timeline in the terminal |
 | Grafana panels say "no data" right after a restart | Metrics need two export intervals (≈20 s) and a few incidents; show `/metrics/live` or the console Metrics page instead |
-| Everything is down | Walk through the rehearsal output and the docs; the diagrams, ADRs, TCO and 155 tests stand on their own |
+| Everything is down | Walk through the rehearsal output and the docs; the diagrams, ADRs, TCO and 188 tests stand on their own |
 
 ## Likely jury questions
 

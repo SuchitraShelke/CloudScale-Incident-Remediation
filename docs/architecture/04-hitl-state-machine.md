@@ -20,12 +20,19 @@ flowchart TD
     await_a -->|Reject| rejected([REJECTED])
     await_e -->|Approve| executing
     await_e -->|Reject| rejected
+    await_a -.->|no answer in 10 min<br/>timer promotes| await_e
+    await_e -.->|no answer in 30 min<br/>timer expires, nothing executed| recheck{Metrics healthy?}
+    recheck -->|yes| resolved
+    recheck -->|no| escalated
     executing -->|step failed or breaker open<br/>→ roll back completed steps| escalated
     executing --> verifying[VERIFYING]
     verifying -->|all SLOs met| resolved([RESOLVED])
     verifying -->|at least 50% better| partial([PARTIALLY_RESOLVED])
     verifying -->|no improvement or manual handoff| escalated
+    escalated -.->|human records fix, metrics verified| proposal[[RB-PROPOSED runbook<br/>for review]]
 ```
+
+**Timeouts never approve.** Dotted edges are the timer (`system:hitl-timer`) and the learning path. Every ESCALATED incident has a hand-off summary (`GET /incidents/{id}/handoff`) that says what changed, if anything. Demo timers: 2 min / 4 min (`HITL_PROMOTE_AFTER_S`, `HITL_EXPIRE_AFTER_S`).
 
 ## Gate rules (`src/cloudscale/common/gate_policy.yaml`)
 

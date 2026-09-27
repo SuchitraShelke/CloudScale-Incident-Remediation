@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     token_public_key_path: str = "keys/signing_public.pem"
     sim_control_key: str = "dev-sim-key"    # shared secret for the simulator control routes
     scenarios_dir: str = "mock-data/scenarios"
+    hitl_promote_after_s: float = 600     # APPROVAL unanswered -> senior queue (never auto-approves)
+    hitl_expire_after_s: float = 1800     # ESCALATION unanswered -> re-check metrics, close, nothing executed
     breaker_threshold: int = 3        # consecutive failed calls before a tool's breaker opens
     breaker_cooldown_s: float = 30.0
     fastembed_cache_dir: str | None = None   # image bakes the model into /opt/fastembed

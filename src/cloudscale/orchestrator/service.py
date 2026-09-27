@@ -6,6 +6,7 @@ finishes. A node that calls interrupt() emits no update, so a re-run on resume n
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -14,9 +15,10 @@ from typing import Any
 
 from langgraph.types import Command
 
+from cloudscale.common.runbooks import slo_thresholds
 from cloudscale.common.scenarios import load_scenario
 from cloudscale.common.telemetry import instruments, tracer
-from cloudscale.orchestrator.graph import TERMINAL, event
+from cloudscale.orchestrator.graph import TERMINAL, TIMER, event
 from cloudscale.orchestrator.store import IncidentStore
 
 log = logging.getLogger("cloudscale.orchestrator")
@@ -26,6 +28,25 @@ EVENT_TYPES = {"intake": "GUARD_CHECK", "triage": "AGENT_DECISION", "planner": "
                "execute": "TOOL_EXECUTION", "evaluate": "VERIFICATION", "close": "INCIDENT_CLOSED"}
 ACTORS = {"triage": ("agent", "triage"), "planner": ("agent", "planner"), "execute": ("agent", "executor"),
           "evaluate": ("agent", "evaluator")}          # everything else: the deterministic supervisor
+
+
+def draft_runbook(view: dict[str, Any], category: str, how_fixed: str) -> dict[str, Any]:
+    """Proposed catalogue entry from a verified human fix: the most specific error lines as signatures and
+    the worst-breached SLO metric (at alert time) as corroboration. A senior reviews it before it's used."""
+    lines = [ln for ln in view["incident"]["log_excerpt"].splitlines() if ln.strip()]
+    ranked = sorted(lines, key=lambda ln: (0 if re.search(r"\b(FATAL|ERROR)\b", ln) else 1, -len(ln)))
+    signatures = []
+    for ln in ranked[:2]:
+        text = re.sub(r"^\S*\d{4}-\d\d-\d\dT\S+\s+", "", ln)          # drop the timestamp
+        text = re.sub(r"^(FATAL|ERROR|WARN|INFO|DEBUG)\s+", "", text)
+        signatures.append(re.escape(text[:80]))
+    baseline, thresholds = view["observations"]["metrics"], slo_thresholds()
+    breached = {k: baseline[k] / t for k, t in thresholds.items() if baseline.get(k, 0) > t}
+    metric = max(breached, key=breached.get) if breached else "error_rate_pct"
+    return {"id": f"RB-PROPOSED-{view['incident']['incident_id']}", "root_cause_category": category,
+            "signatures": signatures, "corroborate": {"metric": metric, "above": thresholds[metric]},
+            "how_fixed": how_fixed, "source_incident": view["incident"]["incident_id"],
+            "service": view["incident"]["affected_service"]}
 
 
 def generic_simulation(incident: dict[str, Any]) -> dict[str, Any]:
@@ -50,9 +71,12 @@ class NullAudit:
 
 class IncidentService:
     def __init__(self, graph, register_sim: Callable[[str, str], Awaitable[None]], scenarios_dir: Path,
-                 store: IncidentStore, audit=None, ledger=None, max_concurrent: int = 5):
+                 store: IncidentStore, audit=None, ledger=None, max_concurrent: int = 5,
+                 promote_after_s: float = 600, expire_after_s: float = 1800, read_metrics=None):
         self.graph, self.register_sim, self.dir, self.store = graph, register_sim, scenarios_dir, store
         self.audit, self.ledger = audit or NullAudit(), ledger
+        self.promote_after_s, self.expire_after_s = promote_after_s, expire_after_s
+        self.read_metrics = read_metrics        # async (incident) -> metrics; re-verifies a human's fix
         self.sem = asyncio.Semaphore(max_concurrent)   # released while a graph waits on a human
         self.errors: dict[str, str] = {}
         self.pending_since: dict[str, tuple[float, str]] = {}   # HITL wait metric
@@ -184,6 +208,62 @@ class IncidentService:
         return {**values, "status": status, "pending_decision": pending[0] if pending else None,
                 "error": error, "terminal": status in TERMINAL}
 
+    async def sweep_deadlines(self, now: float | None = None) -> list[tuple[str, str]]:
+        """Timeout ladder for unanswered HITL gates. It never approves:
+        APPROVAL unanswered >= promote_after -> ESCALATE (senior queue);
+        ESCALATION unanswered >= expire_after -> EXPIRE (re-check metrics, close; nothing is executed)."""
+        now = now or time.time()
+        actions = []
+        for row in await self.store.all():
+            v = await self.get(row["incident_id"])
+            p = (v or {}).get("pending_decision")
+            if not p or "requested_at" not in p:
+                continue
+            waited = now - p["requested_at"]
+            if p["gate"] == "APPROVAL" and waited >= self.promote_after_s:
+                outcome, event_type = "ESCALATE", "HITL_PROMOTED"
+            elif p["gate"] == "ESCALATION" and waited >= self.expire_after_s:
+                outcome, event_type = "EXPIRE", "HITL_EXPIRED"
+            else:
+                continue
+            iid = row["incident_id"]
+            await self.audit.append(event_type, "system", TIMER,
+                                    {"gate": p["gate"], "waited_s": round(waited), "plan_hash": p["plan_hash"]}, iid)
+            await self.resume(iid, {"decision_id": f"timer-{uuid.uuid4().hex[:8]}", "outcome": outcome,
+                                    "plan_hash": p["plan_hash"], "gate": p["gate"], "approver": TIMER, "role": None})
+            actions.append((iid, outcome))
+        return actions
+
+    async def record_resolution(self, incident_id: str, recorded_by: str, how_fixed: str,
+                                category: str) -> dict[str, Any]:
+        """A human fixed an escalated incident outside the platform. Re-verify against live metrics; if the fix
+        holds, draft a runbook entry for review. Nothing goes to runbooks.yaml or the semantic cache by itself."""
+        v = await self.get(incident_id)
+        if not v or v.get("status") != "ESCALATED":
+            raise ValueError("Only escalated incidents can have a manual fix recorded.")
+        metrics = await self.read_metrics(v["incident"]) if self.read_metrics else {}
+        thresholds = slo_thresholds()
+        verified = bool(metrics) and all(metrics[k] < t for k, t in thresholds.items() if k in metrics)
+        row = {"incident_id": incident_id, "recorded_by": recorded_by, "how_fixed": how_fixed,
+               "category": category, "verified": verified, "metrics": metrics}
+        await self.store.add_resolution(row)
+        await self.audit.append("MANUAL_RESOLUTION_RECORDED", "human", recorded_by,
+                                {k: row[k] for k in ("how_fixed", "category", "verified", "metrics")}, incident_id)
+        proposal = draft_runbook(v, category, how_fixed) if verified else None
+        if proposal:
+            await self.store.add_proposal(proposal, incident_id)
+            await self.audit.append("RUNBOOK_PROPOSED", "system", "orchestrator", proposal, incident_id)
+        return {"verified": verified, "metrics": metrics, "proposal": proposal}
+
+    def deadline(self, pending: dict | None) -> dict[str, Any]:
+        """For the console: when the timer acts next, and whether the request is overdue."""
+        if not pending or "requested_at" not in pending:
+            return {}
+        limit = self.promote_after_s if pending["gate"] == "APPROVAL" else self.expire_after_s
+        remaining = pending["requested_at"] + limit - time.time()
+        return {"timer_action": "escalates" if pending["gate"] == "APPROVAL" else "expires",
+                "timer_in_s": max(0, round(remaining)), "overdue": remaining <= limit / 2}
+
     async def list(self) -> list[dict[str, Any]]:
         out = []
         for row in await self.store.all():
@@ -197,6 +277,7 @@ class IncidentService:
                         "service": inc.get("affected_service"), "status": v.get("status"),
                         "gate": (v.get("gate") or {}).get("gate") or (v.get("pending_decision") or {}).get("gate"),
                         "required_role": (v.get("pending_decision") or {}).get("required_role"),
+                        **self.deadline(v.get("pending_decision")),
                         "created_at": row["created_at"]})
             if v.get("terminal"):
                 self._closed_rows[row["incident_id"]] = out[-1]

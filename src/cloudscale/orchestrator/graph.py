@@ -38,6 +38,7 @@ from cloudscale.orchestrator.llm.base import LLM
 from cloudscale.orchestrator.llm.claude import BudgetExceeded
 from cloudscale.orchestrator.tools import ToolCallError, ToolClient
 
+TIMER = "system:hitl-timer"          # the only non-human actor allowed to decide at a gate (never approves)
 MANUAL_RUNBOOKS = {rb["id"] for rb in load_catalogue()["runbooks"] if rb.get("manual")} | {"RB-ONCALL"}
 TERMINAL = {"QUARANTINED", "ESCALATED", "REJECTED", "RESOLVED", "PARTIALLY_RESOLVED", "FAILED"}
 MAX_PLAN_ATTEMPTS = 2
@@ -58,6 +59,8 @@ class IncidentState(TypedDict, total=False):
     validation_errors: list[str]
     tag_mismatch: bool
     gate_floor: str | None
+    timed_out: bool
+    handoff: dict | None
     gate: dict | None
     decision: dict | None
     results: list[dict]
@@ -131,6 +134,34 @@ def traced(name: str, fn):
 def trace_status_error(msg: str):
     from opentelemetry.trace import Status, StatusCode
     return Status(StatusCode.ERROR, msg)
+
+
+def _handoff(state: dict) -> dict:
+    """Ticket-style summary for the humans who take over (production: a ticket + a page). No LLM."""
+    inc, tri, plan = state["incident"], state.get("triage") or {}, state.get("plan") or {}
+    results, gate = state.get("results") or [], state.get("gate") or {}
+    ran = [r for r in results if r["status"] == "OK"]
+    rolled = [r for r in results if r["status"] == "ROLLED_BACK"]
+    if not ran:
+        changed = "Nothing was changed."
+    elif rolled:
+        changed = f"{len(ran)} step(s) ran and {len(rolled)} rollback(s) restored the previous state."
+    else:
+        changed = f"{len(ran)} step(s) ran: {', '.join(r.get('tool') or r['step_id'] for r in ran)}."
+    reasons = sorted({r for s in gate.get("steps", []) for r in s.get("reasons", [])})
+    return {
+        "incident_id": inc["incident_id"], "title": inc["title"], "severity": inc["severity"],
+        "service": inc["affected_service"], "namespace": inc["namespace"], "cloud": inc["cloud_provider"],
+        "why_escalated": state.get("summary") or (state.get("events") or [{}])[-1].get("msg", ""),
+        "diagnosis": tri.get("root_cause"), "category": tri.get("root_cause_category"),
+        "confidence": tri.get("confidence"), "llm_confidence": tri.get("llm_confidence"),
+        "evidence_score": tri.get("evidence_score"), "gate": gate.get("gate"), "gate_reasons": reasons,
+        "proposed_plan": plan.get("summary"),
+        "proposed_steps": [(s.get("call") or {}).get("tool_name") or s.get("runbook_ref") for s in plan.get("steps", [])],
+        "artifacts": [a["filename"] for a in plan.get("artifacts", [])],
+        "what_changed": changed, "timed_out": bool(state.get("timed_out")),
+        "final_metrics": (state.get("verification") or {}).get("final_metrics"),
+    }
 
 
 def _requested_actions(plan: dict, results: list[dict]) -> list[dict]:
@@ -319,9 +350,10 @@ def build_graph(deps: Deps, checkpointer=None):
                                    gate="AUTO", reasons=_reasons(ev))]})
 
         # No side effects above this line: LangGraph re-runs the node from the top on resume.
+        # requested_at drives the timeout ladder; recomputed when the node re-runs on resume (harmless).
         decision = interrupt({"incident_id": inc["incident_id"], "gate": ev.gate, "plan_hash": ev.plan_hash,
                               "required_role": ev.required_role, "risk_level": ev.risk_level,
-                              "steps": gate["steps"]})
+                              "steps": gate["steps"], "requested_at": time.time()})
 
         allowed = {"APPROVAL": {"sre", "senior_sre"}, "ESCALATION": {"senior_sre"}}[ev.gate]
         outcome = decision.get("outcome")
@@ -340,6 +372,12 @@ def build_graph(deps: Deps, checkpointer=None):
             return Command(goto="hitl_gate", update={
                 "gate_floor": "ESCALATION",
                 "events": [event("hitl_gate", f"Escalated to senior SRE by {decision.get('approver')}")]})
+        if outcome == "EXPIRE" and decision.get("approver") == TIMER:
+            # Nobody decided in time. Never execute: re-check the metrics once and close.
+            return Command(goto="evaluate", update={
+                "gate": gate, "decision": decision, "status": "VERIFYING", "results": [], "timed_out": True,
+                "events": [event("hitl_gate", "No decision in time: nothing will be executed; re-checking metrics",
+                                 type="HITL_EXPIRED")]})
         return Command(goto="hitl_gate", update={"events": [
             event("hitl_gate", f"Ignored decision {outcome!r} from role {decision.get('role')!r}; still waiting")]})
 
@@ -423,6 +461,19 @@ def build_graph(deps: Deps, checkpointer=None):
         handed_off = any(r["status"] == "HANDED_OFF" for r in results)
         tool_ran = any(r["status"] == "OK" for r in results)
         read, waited, polls = _read_token(deps, inc), 0.0, 0
+        if state.get("timed_out"):
+            # Decision timed out: nothing was executed. One look at the live metrics decides how to close.
+            m = (await deps.tools.call("get_metrics", {"scope": _scope(inc), "service": inc["affected_service"]},
+                                       read))["metrics"]
+            healthy = all(m[k] < t for k, t in thresholds.items() if k in m)
+            outcome = "RESOLVED" if healthy else "ESCALATED"
+            summary = ("Recovered without action; nothing was changed." if healthy else
+                       "No decision in time; nothing was changed. Handed off to the incident process.")
+            return {"verification": {"outcome": outcome, "healthy": healthy, "final_metrics": m,
+                                     "baseline": baseline, "thresholds": thresholds, "polls": 1, "waited_s": 0.0,
+                                     "timed_out": True},
+                    "summary": summary, "status": outcome,
+                    "events": [event("evaluate", f"{outcome}: {summary}", metrics=m)]}
         while True:
             m = (await deps.tools.call("get_metrics", {"scope": _scope(inc), "service": inc["affected_service"]},
                                        read))["metrics"]
@@ -455,9 +506,14 @@ def build_graph(deps: Deps, checkpointer=None):
                 "events": [event("evaluate", f"{outcome} after {polls} poll(s), {waited:.0f}s", metrics=m)]}
 
     async def close(state: IncidentState) -> dict:
-        events = []
+        events, update = [], {}
         cache, status = state.get("cache") or {}, state["status"]
-        if deps.cache and cache and state.get("verification"):
+        if status == "ESCALATED":
+            update["handoff"] = _handoff(state)
+            events.append(event("close", "Hand-off prepared for the on-call engineer", type="HANDOFF_CREATED",
+                                handoff=update["handoff"]))
+        # A timed-out incident executed nothing, so there is no verified fix to cache.
+        if deps.cache and cache and state.get("verification") and not state.get("timed_out"):
             resolved = status == "RESOLVED" and state["verification"]["healthy"]
             if cache.get("hit"):
                 result = await deps.cache.feedback(cache["entry_id"], resolved)
@@ -469,7 +525,7 @@ def build_graph(deps: Deps, checkpointer=None):
                                                state["plan"], state["observations"]["deployment"], cost)
                 events.append(event("close", f"Verified fix written to semantic cache (entry {entry})",
                                     type="CACHE_WRITTEN", entry_id=entry))
-        return {"events": events + [event("close", f"Closed as {status}", spent_usd=_spent(state))]}
+        return {**update, "events": events + [event("close", f"Closed as {status}", spent_usd=_spent(state))]}
 
     # ------------------------------------------------------------------ supervisor (routing)
     def after(ok_next: str) -> Callable[[IncidentState], str]:

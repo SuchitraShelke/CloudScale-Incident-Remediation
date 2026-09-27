@@ -14,14 +14,21 @@ The platform must act autonomously on safe fixes and stop for humans on risky on
   - **confidence:** below 0.60 → at least APPROVAL
   - also: critical alerts, a degraded guard, an LLM/op-class tag mismatch, a destructive step with no rollback, and a cached diagnosis (capped at 0.79)
 - **Mechanics:** LangGraph `interrupt()`. The gate node has no side effects before the interrupt, because LangGraph re-runs it on resume. Decisions are bound to the plan version (`plan_hash`), and the approver's identity comes from the session. Roles: `sre` for APPROVAL, `senior_sre` for ESCALATION.
+- **Timeout ladder, never auto-approve.** An unanswered gate can't block forever, but silence is never consent:
+  - APPROVAL unanswered for `HITL_PROMOTE_AFTER_S` (default 10 min; demo 2 min) → promoted to the senior queue (`HITL_PROMOTED`, actor `system:hitl-timer`).
+  - ESCALATION unanswered for `HITL_EXPIRE_AFTER_S` (default 30 min; demo 4 min) → expires (`HITL_EXPIRED`): **nothing is executed**, metrics are re-checked once, and the incident closes as RESOLVED ("recovered without action") or ESCALATED.
+  - A background sweeper runs every 15 s; the deadline is stored in the checkpointed interrupt (`requested_at`), so it survives restarts. A human decision before the deadline always wins. Timed-out diagnoses are not written to the semantic cache.
+- **Escalated means handed off, with context.** Every ESCALATED incident carries a hand-off summary (diagnosis, confidence, proposed plan and drafted artifacts, **what changed**, metrics), served at `GET /incidents/{id}/handoff` as markdown for the incident channel.
+- **Learning from human fixes, by review only.** `POST /incidents/{id}/resolution` records how a human fixed an escalated incident. The platform re-reads metrics; only a **verified** fix drafts a `RB-PROPOSED-*` runbook entry (signatures from the logs, corroborating SLO metric). Proposals are listed for review and never become active runbooks or cache entries automatically.
 - **One source of truth:** `gate_policy.yaml` feeds both the gate and OPA's data (`scripts/gen_opa_data.py --check`).
 
 ## Alternatives considered
 - **Plan-level gate on LLM confidence (v1):** let destructive operations auto-run at high self-reported confidence.
-- **Timer-based auto-approve:** an unattended destructive change is not acceptable. Our blueprint's REVIEW timer is limited to disruptive steps and wasn't built in the prototype.
+- **Timer-based auto-approve:** an unattended destructive change is not acceptable. The timer only escalates or expires.
+- **Wait forever:** the incident silently stalls; nobody knows it needs attention.
 
 ## Consequences
 - The jury can read every decision's reasons: the gate records, per step, e.g. `matrix:DESTRUCTIVE@0.86, impact_usd>50000`.
 - OPA enforces the destructive rule a second time on the tool side: no human approver, no destructive call.
 
-**In the code:** `common/gate.py`, `common/gate_policy.yaml`, `tests/test_gate.py` (every cell and override), `orchestrator/api.py` (decisions).
+**In the code:** `common/gate.py`, `common/gate_policy.yaml`, `tests/test_gate.py` (every cell and override), `orchestrator/api.py` (decisions), `orchestrator/service.py` (`sweep_deadlines`, `record_resolution`), `tests/test_hitl_timeouts.py`, `tests/test_manual_resolution.py`.

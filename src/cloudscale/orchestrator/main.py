@@ -82,20 +82,41 @@ async def lifespan(app: FastAPI):
                 issuer=TokenIssuer(load_private_key(Path(s.token_private_key_path))),
                 guard=Guard(s.ollama_url, s.guard_model, s.guard_timeout_s, RedisGuardCache(redis)),
                 cache=SemanticCache(pool, FastEmbedder(s.fastembed_cache_dir)))
+    async def read_metrics(inc: dict) -> dict:
+        token = deps.issuer.mint_read(inc["incident_id"], inc["namespace"], inc["cloud_provider"])
+        out = await deps.tools.call("get_metrics", {"scope": {"namespace": inc["namespace"],
+                                                              "cloud_provider": inc["cloud_provider"]},
+                                                    "service": inc["affected_service"]}, token)
+        return out["metrics"]
+
     async with AsyncPostgresSaver.from_conn_string(s.postgres_dsn) as saver:
         await saver.setup()
         app.state.auth = Auth(s.session_secret, s.demo_users)
         app.state.audit = AuditLog(audit_pool)
         app.state.ledger = TokenLedger(pool)
         app.state.service = IncidentService(build_graph(deps, saver), register_sim, Path(s.scenarios_dir),
-                                            PgIncidentStore(pool), app.state.audit, app.state.ledger)
+                                            PgIncidentStore(pool), app.state.audit, app.state.ledger,
+                                            promote_after_s=s.hitl_promote_after_s,
+                                            expire_after_s=s.hitl_expire_after_s,
+                                            read_metrics=read_metrics)
         # Load the embedding model now (first load ~20 s on the dev VM) instead of on the first incident.
         warm = asyncio.create_task(deps.cache.embedder.embed("warm up"))
         warm.add_done_callback(lambda t: log.info("embedding model warm: %s", "ok" if not t.exception() else t.exception()))
+        async def deadline_sweeper() -> None:
+            while True:
+                await asyncio.sleep(15)
+                try:
+                    for iid, outcome in await app.state.service.sweep_deadlines():
+                        log.info("HITL timer: %s -> %s", iid, outcome)
+                except Exception:  # keep sweeping; one bad incident must not stop the timer
+                    log.exception("deadline sweep failed")
+
+        sweeper = asyncio.create_task(deadline_sweeper())
         resumed = await app.state.service.resume_in_flight()
         if resumed:
             log.info("resumed in-flight incidents after restart: %s", resumed)
         yield
+        sweeper.cancel()
     await pool.close()
     await audit_pool.close()
     await redis.aclose()

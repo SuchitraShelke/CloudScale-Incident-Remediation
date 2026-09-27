@@ -147,10 +147,36 @@ def show_incident(iid: str) -> None:
                                     "failover": u.get("failover") or ""} for u in usage]),
                      hide_index=True, width="stretch")
 
+    if v["status"] == "ESCALATED":
+        escalated_panel(iid)
+
     with st.expander("Agent timeline", expanded=True):
         t0 = v["events"][0]["ts"] if v.get("events") else 0
         st.dataframe(pd.DataFrame([{"+s": round(e["ts"] - t0, 1), "agent": e["node"], "what happened": e["msg"]}
                                    for e in v.get("events", [])]), hide_index=True, width="stretch")
+
+
+def escalated_panel(iid: str) -> None:
+    """Escalated = handed to the incident process. Show the hand-off, and let an SRE record how it was fixed."""
+    if h := ok(api("GET", f"/incidents/{iid}/handoff")):
+        with st.expander("Hand-off for the on-call / incident channel", expanded=True):
+            st.markdown(h["markdown"])
+            st.code(h["markdown"], language="markdown")      # built-in copy button
+    if not can_act:
+        return
+    with st.form(f"fix-{iid}"):
+        st.markdown("**Record how it was fixed** (re-checked against live metrics; a verified fix drafts a "
+                    "runbook proposal for review, never an active runbook)")
+        how = st.text_area("What did you do?", key=f"how-{iid}",
+                           placeholder="Rolled back notification-worker to v2.3.1; lag drained in 4 min")
+        cat = st.text_input("Root-cause category", key=f"cat-{iid}", placeholder="bad_deploy")
+        if st.form_submit_button("Record fix") and (r := ok(api("POST", f"/incidents/{iid}/resolution",
+                                                                json={"how_fixed": how,
+                                                                      "root_cause_category": cat}))):
+            if r["verified"]:
+                st.success(f"Verified: metrics are within SLO. Proposed {r['proposal']['id']} for review.")
+            else:
+                st.warning("Recorded, but metrics are still outside SLO, so no runbook was proposed.")
 
 
 def decision_panel(iid: str, p: dict) -> None:
@@ -201,11 +227,32 @@ def approvals_page() -> None:
     queue = ok(api("GET", "/hitl/queue")) or []
     if not queue:
         st.success("Nothing is waiting for a human decision.")
+        st.divider()
+        proposals_section()
         return
     for q in queue:
         who = "you can decide" if q["can_decide"] else f"needs {q['required_role']}"
-        with st.expander(f"{q['incident_id']} · {q['title']} · {q['gate']} ({who})", expanded=q["can_decide"]):
+        timer = ""
+        if "timer_in_s" in q:
+            m, sec = divmod(q["timer_in_s"], 60)
+            timer = f" · {'OVERDUE · ' if q['overdue'] else ''}{q['timer_action']} in {m}m{sec:02d}s"
+        with st.expander(f"{q['incident_id']} · {q['title']} · {q['gate']} ({who}){timer}",
+                         expanded=q["can_decide"]):
             show_incident(q["incident_id"])
+    st.caption("Unanswered approvals move to the senior queue; unanswered escalations expire. "
+               "The timer never approves anything.")
+    st.divider()
+    proposals_section()
+
+
+def proposals_section() -> None:
+    props = ok(api("GET", "/runbooks/proposals")) or []
+    st.markdown("**Runbook proposals from verified human fixes** (review before adding to runbooks.yaml)")
+    if not props:
+        st.caption("None yet. Record a fix on an escalated incident to create one.")
+    for pr in props:
+        with st.expander(f"{pr['id']} · {pr['root_cause_category']} · {pr['status']}"):
+            st.json(pr)
 
 
 def _num(v, fmt: str) -> str:

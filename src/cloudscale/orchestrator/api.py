@@ -185,6 +185,49 @@ async def incident_ledger(incident_id: str, request: Request, _: User = Depends(
     return await request.app.state.ledger.for_incident(incident_id)
 
 
+@router.get("/incidents/{incident_id}/handoff")
+async def handoff(incident_id: str, request: Request, _: User = Depends(current_user)) -> dict:
+    view = await request.app.state.service.get(incident_id)
+    if not view or not view.get("handoff"):
+        raise HTTPException(404, "No hand-off: the incident isn't escalated.")
+    h = view["handoff"]
+    md = "\n".join([
+        f"### {h['incident_id']}: {h['title']}",
+        f"**{h['severity']}** · `{h['service']}` in `{h['namespace']}` on `{h['cloud']}`",
+        f"**Why escalated:** {h['why_escalated']}",
+        f"**What changed:** {h['what_changed']}",
+        f"**Diagnosis:** {h['diagnosis']} (`{h['category']}`)",
+        f"**Confidence:** {h['confidence']} (LLM {h['llm_confidence']}, evidence {h['evidence_score']})",
+        f"**Gate:** {h['gate']} · {', '.join(h['gate_reasons']) or '-'}",
+        f"**Proposed plan:** {h['proposed_plan']}",
+        f"**Proposed steps:** {', '.join(s for s in h['proposed_steps'] if s) or '-'}",
+        f"**Drafted artifacts (not applied):** {', '.join(h['artifacts']) or '-'}",
+        f"**Metrics at close:** {h['final_metrics']}",
+        f"Full trail: GET /audit?incident_id={h['incident_id']}",
+    ])
+    return {**h, "markdown": md}
+
+
+class Resolution(BaseModel):
+    how_fixed: str = Field(min_length=5, max_length=1000)
+    root_cause_category: str = Field(pattern=r"^[a-z0-9_]{3,60}$")
+
+
+@router.post("/incidents/{incident_id}/resolution")
+async def record_resolution(incident_id: str, body: Resolution, request: Request,
+                            user: User = Depends(CAN_ACT)) -> dict:
+    try:
+        return await request.app.state.service.record_resolution(incident_id, user.username, body.how_fixed,
+                                                                 body.root_cause_category)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.get("/runbooks/proposals")
+async def runbook_proposals(request: Request, _: User = Depends(current_user)) -> list[dict]:
+    return await request.app.state.service.store.proposals()
+
+
 @router.get("/audit")
 async def audit_list(request: Request, incident_id: str | None = None, limit: int = 300,
                      _: User = Depends(current_user)) -> list[dict]:
