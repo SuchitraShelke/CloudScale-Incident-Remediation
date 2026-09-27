@@ -463,20 +463,29 @@ def build_graph(deps: Deps, checkpointer=None):
         read, waited, polls = _read_token(deps, inc), 0.0, 0
         if state.get("timed_out"):
             # Decision timed out: nothing was executed. One look at the live metrics decides how to close.
-            m = (await deps.tools.call("get_metrics", {"scope": _scope(inc), "service": inc["affected_service"]},
-                                       read))["metrics"]
-            healthy = all(m[k] < t for k, t in thresholds.items() if k in m)
+            try:
+                m = (await deps.tools.call("get_metrics", {"scope": _scope(inc), "service": inc["affected_service"]},
+                                           read))["metrics"]
+                healthy, unreadable = all(m[k] < t for k, t in thresholds.items() if k in m), ""
+            except (ToolCallError, CircuitOpenError) as e:
+                m, healthy, unreadable = {}, False, f" Metrics couldn't be re-checked ({e})."
             outcome = "RESOLVED" if healthy else "ESCALATED"
             summary = ("Recovered without action; nothing was changed." if healthy else
-                       "No decision in time; nothing was changed. Handed off to the incident process.")
+                       f"No decision in time; nothing was changed.{unreadable} Handed off to the incident process.")
             return {"verification": {"outcome": outcome, "healthy": healthy, "final_metrics": m,
                                      "baseline": baseline, "thresholds": thresholds, "polls": 1, "waited_s": 0.0,
                                      "timed_out": True},
                     "summary": summary, "status": outcome,
                     "events": [event("evaluate", f"{outcome}: {summary}", metrics=m)]}
+        m, unreadable = baseline, ""
         while True:
-            m = (await deps.tools.call("get_metrics", {"scope": _scope(inc), "service": inc["affected_service"]},
-                                       read))["metrics"]
+            try:
+                m = (await deps.tools.call("get_metrics", {"scope": _scope(inc), "service": inc["affected_service"]},
+                                           read))["metrics"]
+            except (ToolCallError, CircuitOpenError) as e:
+                # Can't verify: never claim success. Hand off with what ran, instead of failing silently.
+                unreadable, healthy = f"Verification couldn't read metrics ({e}).", False
+                break
             polls += 1
             healthy = all(m[k] < t for k, t in thresholds.items() if k in m)
             if healthy or (handed_off and not tool_ran) or waited >= deps.verify_timeout_s:
@@ -484,7 +493,7 @@ def build_graph(deps: Deps, checkpointer=None):
             await deps.sleep(deps.poll_interval_s)
             waited += deps.poll_interval_s
 
-        if handed_off:
+        if handed_off or unreadable:
             outcome = "ESCALATED"
         elif healthy:
             outcome = "RESOLVED"
@@ -494,6 +503,10 @@ def build_graph(deps: Deps, checkpointer=None):
             outcome = "PARTIALLY_RESOLVED" if gains and sum(gains) / len(gains) >= 0.5 else "ESCALATED"
         verification = {"outcome": outcome, "healthy": healthy, "final_metrics": m, "baseline": baseline,
                         "thresholds": thresholds, "polls": polls, "waited_s": waited}
+        if unreadable:
+            return {"verification": {**verification, "error": unreadable}, "status": outcome,
+                    "summary": f"{unreadable} Handed off to the incident process.",
+                    "events": [event("evaluate", f"ESCALATED: {unreadable}")]}
         try:
             summary, usage = await deps.llm.summarize({"incident": inc, "results": results,
                                                        "actions": _requested_actions(state["plan"], results),

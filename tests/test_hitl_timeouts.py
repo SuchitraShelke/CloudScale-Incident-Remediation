@@ -82,3 +82,33 @@ async def test_handoff_after_a_failed_step_reports_the_rollback(mocked_backends)
     await svc.resume(iid, approve(await svc.get(iid)), wait=True)
     h = (await svc.get(iid))["handoff"]
     assert "rollback" in h["what_changed"] and h["gate"] == "APPROVAL"
+
+
+async def test_expiry_after_the_simulator_lost_the_incident_escalates_and_spares_the_breaker(mocked_backends):
+    # Found live: an old incident whose simulator state was lost on restart expired, its metric re-check
+    # failed, and that opened the get_metrics breaker shared by every other incident.
+    env = build_env(breaker_threshold=1)
+    svc = env["service"]
+    iid = await svc.start("s01-oom-orders", wait=True)
+    await svc.sweep_deadlines(now=time.time() + 601)
+    await settle(svc)
+    del env["sim"].incidents[iid]
+    await svc.sweep_deadlines(now=time.time() + HOUR)
+    await settle(svc)
+    v = await svc.get(iid)
+    assert v["status"] == "ESCALATED" and "couldn't be re-checked" in v["summary"]
+    assert v["handoff"]["what_changed"] == "Nothing was changed."
+    other = await svc.start("s02-cache-bloat", wait=True)                       # breaker still closed
+    assert (await svc.get(other))["status"] == "RESOLVED"
+
+
+async def test_verification_without_metrics_hands_off_what_ran_instead_of_failing(mocked_backends):
+    env = build_env(breaker_threshold=1)
+    svc = env["service"]
+    iid = await svc.start("s01-oom-orders", wait=True)
+    env["sim"].inject_fault("get_metrics", 10)
+    await svc.resume(iid, approve(await svc.get(iid)), wait=True)
+    v = await svc.get(iid)
+    assert v["status"] == "ESCALATED" and v["verification"]["healthy"] is False
+    assert "Verification couldn't read metrics" in v["summary"]
+    assert "ran" in v["handoff"]["what_changed"] and env["sim"].get(iid).actions

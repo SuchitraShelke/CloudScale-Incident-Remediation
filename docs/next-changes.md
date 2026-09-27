@@ -1,5 +1,8 @@
 # Next changes: HITL timeout ladder, escalation hand-off, recorded fixes
 
+**Status: implemented in b69b9e6** (2026-09-27). The design rationale now lives in ADR-004; this file is kept as the
+build record. Tests: `tests/test_hitl_timeouts.py`, `tests/test_manual_resolution.py`; live rehearsal 12/12.
+
 Agreed with the user on 2026-09-27. Build A → B → C, run `uv run pytest -q` and `scripts/rehearse.py --crash`, then
 ASK before committing. Never auto-approve on timeout.
 

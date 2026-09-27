@@ -22,6 +22,7 @@ class ToolCallError(Exception):
     def __init__(self, tool: str, message: str, breaker_change: str | None = None):
         self.tool, self.message, self.breaker_change = tool, message, breaker_change
         self.denied = "denied:" in message
+        self.client_error = self.denied or "not registered with the simulator" in message
         super().__init__(f"{tool}: {message}")
 
 
@@ -69,13 +70,13 @@ class ToolClient:
                 async for attempt in AsyncRetrying(
                         stop=stop_after_attempt(3), reraise=True,
                         wait=wait_exponential(multiplier=self.retry_wait, max=4 * self.retry_wait),
-                        retry=retry_if_exception(lambda e: isinstance(e, ToolCallError) and not e.denied)):
+                        retry=retry_if_exception(lambda e: isinstance(e, ToolCallError) and not e.client_error)):
                     with attempt:
                         result = await self._once(tool, args, token)
             else:
                 result = await self._once(tool, args, token)
         except ToolCallError as e:
-            if breaker and not e.denied:                       # one failure per logical call, after retries
+            if breaker and not e.client_error:                 # one failure per logical call, after retries
                 e.breaker_change = await breaker.on_failure()
             raise
         if breaker and (changed := await breaker.on_success()):
