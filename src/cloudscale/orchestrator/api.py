@@ -135,9 +135,12 @@ async def decide(incident_id: str, body: Decision, request: Request,
 
     decision = {"decision_id": uuid.uuid4().hex, "outcome": body.outcome, "plan_hash": body.plan_hash,
                 "gate": gate, "approver": user.username, "role": user.role, "comment": body.comment}
-    await request.app.state.audit.append("HITL_DECISION", "human", user.username,
-                                         {k: v for k, v in decision.items() if k != "approver"}, incident_id)
-    await service.resume(incident_id, decision)
+    from cloudscale.orchestrator.service import DecisionInFlight
+    try:
+        await service.resume(incident_id, decision, audit=("HITL_DECISION", "human", user.username,
+                                                           {k: v for k, v in decision.items() if k != "approver"}))
+    except DecisionInFlight as e:
+        raise HTTPException(409, str(e)) from e
     return {"decision_id": decision["decision_id"], "outcome": body.outcome}
 
 

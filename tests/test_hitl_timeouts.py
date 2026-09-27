@@ -112,3 +112,22 @@ async def test_verification_without_metrics_hands_off_what_ran_instead_of_failin
     assert v["status"] == "ESCALATED" and v["verification"]["healthy"] is False
     assert "Verification couldn't read metrics" in v["summary"]
     assert "ran" in v["handoff"]["what_changed"] and env["sim"].get(iid).actions
+
+
+async def test_only_one_decision_can_resume_a_gate(mocked_backends):
+    # A resumed run can queue behind the concurrency limit while the checkpoint still shows the gate as
+    # pending. A second resume in that window (timer, or another human) must be refused, not run twice.
+    env = build_env()
+    svc = env["service"]
+    iid = await svc.start("s01-oom-orders", wait=True)
+    first = approve(await svc.get(iid))
+    await svc.resume(iid, first)                                                # launched, not awaited
+    import pytest
+
+    from cloudscale.orchestrator.service import DecisionInFlight
+    with pytest.raises(DecisionInFlight):
+        await svc.resume(iid, {**first, "decision_id": "second", "outcome": "REJECTED"})
+    assert await svc.sweep_deadlines(now=time.time() + HOUR) == []             # timer backs off too
+    await settle(svc)
+    v = await svc.get(iid)
+    assert v["status"] == "RESOLVED" and v["decision"]["decision_id"] == first["decision_id"]

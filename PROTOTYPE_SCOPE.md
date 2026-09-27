@@ -128,9 +128,9 @@ See the 2-day table in the gap analysis. Cut order if behind: Streamlit (use Swa
 - [x] M3 HITL API + console + exec tokens + audit chain — scenario 1 approved
       (105 tests incl. 8 on real Postgres; live: approve via API -> RESOLVED, 24 audit rows, chain verifies,
       UPDATE/DELETE refused; startup sweeper resumes in-flight incidents)
-- [~] M4 Live LLM router + fallback + semantic cache + ledger
-      (built; 123 tests; live stack: s02 re-run served from pgvector cache. PENDING: one live Claude run —
-      the key in .env was rejected with 401, so the orchestrator runs scripted)
+- [x] M4 Live LLM router + fallback + semantic cache + ledger
+      (built; 123 tests; live stack: s02 re-run served from pgvector cache. Live model: OpenAI (no Anthropic
+      key available); Claude path built and tested with a fake client. Live rehearsal 12/12, costs measured)
 - [x] M5 Guard layers + scrubber + validators + breaker/fault injection — scenarios 5/6
       (152 tests; live: injected restart fault -> breaker OPEN -> hotfix rolled back -> ESCALATED;
       pre-flight blocks plans whose tools have an OPEN breaker; `scripts/fault.py inject|status|reset`)

@@ -18,8 +18,10 @@ from langgraph.types import Command
 from cloudscale.common.runbooks import slo_thresholds
 from cloudscale.common.scenarios import load_scenario
 from cloudscale.common.telemetry import instruments, tracer
+from cloudscale.orchestrator.breaker import CircuitOpenError
 from cloudscale.orchestrator.graph import TERMINAL, TIMER, event
 from cloudscale.orchestrator.store import IncidentStore
+from cloudscale.orchestrator.tools import ToolCallError
 
 log = logging.getLogger("cloudscale.orchestrator")
 
@@ -69,6 +71,10 @@ class NullAudit:
         return {}
 
 
+class DecisionInFlight(RuntimeError):
+    """A decision for this incident is already being applied; a second one would run the gate twice."""
+
+
 class IncidentService:
     def __init__(self, graph, register_sim: Callable[[str, str], Awaitable[None]], scenarios_dir: Path,
                  store: IncidentStore, audit=None, ledger=None, max_concurrent: int = 5,
@@ -80,6 +86,7 @@ class IncidentService:
         self.sem = asyncio.Semaphore(max_concurrent)   # released while a graph waits on a human
         self.errors: dict[str, str] = {}
         self.pending_since: dict[str, tuple[float, str]] = {}   # HITL wait metric
+        self.running: set[str] = set()     # incidents with a run in progress (single orchestrator replica)
         self._closed_rows: dict[str, dict[str, Any]] = {}       # list() cache for terminal incidents
         self.tasks: set[asyncio.Task] = set()
 
@@ -114,7 +121,19 @@ class IncidentService:
         await self._launch(incident_id, initial, wait)
         return incident_id
 
-    async def resume(self, incident_id: str, decision: dict, wait: bool = False) -> None:
+    async def resume(self, incident_id: str, decision: dict, wait: bool = False,
+                     audit: tuple[str, str, str, dict] | None = None) -> None:
+        """Apply one decision. The claim is taken before any await, so a second decision (timer or human)
+        arriving while the first is still queued or running is refused instead of resuming the gate twice."""
+        if incident_id in self.running:
+            raise DecisionInFlight("A decision for this incident is already being applied. Reload to see it.")
+        self.running.add(incident_id)
+        try:
+            if audit:
+                await self.audit.append(*audit, incident_id)
+        except BaseException:
+            self.running.discard(incident_id)
+            raise
         if incident_id in self.pending_since:
             since, gate = self.pending_since.pop(incident_id)
             instruments().hitl_wait.record(time.time() - since, {"gate": gate})
@@ -135,6 +154,7 @@ class IncidentService:
         return resumed
 
     async def _launch(self, incident_id: str, payload: Any, wait: bool) -> None:
+        self.running.add(incident_id)
         coro = self._run(incident_id, payload)
         if wait:
             await coro
@@ -159,6 +179,8 @@ class IncidentService:
                 self.errors[incident_id] = f"{type(e).__name__}: {e}"
                 await self.audit.append("INCIDENT_FAILED", "system", "orchestrator", {"error": self.errors[incident_id]},
                                         incident_id)
+            finally:
+                self.running.discard(incident_id)
 
     async def _audit_chunk(self, incident_id: str, chunk: dict[str, Any]) -> None:
         for node, update in chunk.items():
@@ -215,6 +237,8 @@ class IncidentService:
         now = now or time.time()
         actions = []
         for row in await self.store.all():
+            if row["incident_id"] in self.running:
+                continue                        # a decision is being applied right now
             v = await self.get(row["incident_id"])
             p = (v or {}).get("pending_decision")
             if not p or "requested_at" not in p:
@@ -227,10 +251,14 @@ class IncidentService:
             else:
                 continue
             iid = row["incident_id"]
-            await self.audit.append(event_type, "system", TIMER,
-                                    {"gate": p["gate"], "waited_s": round(waited), "plan_hash": p["plan_hash"]}, iid)
-            await self.resume(iid, {"decision_id": f"timer-{uuid.uuid4().hex[:8]}", "outcome": outcome,
-                                    "plan_hash": p["plan_hash"], "gate": p["gate"], "approver": TIMER, "role": None})
+            try:
+                await self.resume(iid, {"decision_id": f"timer-{uuid.uuid4().hex[:8]}", "outcome": outcome,
+                                        "plan_hash": p["plan_hash"], "gate": p["gate"], "approver": TIMER,
+                                        "role": None},
+                                  audit=(event_type, "system", TIMER, {"gate": p["gate"], "waited_s": round(waited),
+                                                                       "plan_hash": p["plan_hash"]}))
+            except DecisionInFlight:
+                continue                        # a human got there first
             actions.append((iid, outcome))
         return actions
 
@@ -241,7 +269,11 @@ class IncidentService:
         v = await self.get(incident_id)
         if not v or v.get("status") != "ESCALATED":
             raise ValueError("Only escalated incidents can have a manual fix recorded.")
-        metrics = await self.read_metrics(v["incident"]) if self.read_metrics else {}
+        try:
+            metrics = await self.read_metrics(v["incident"]) if self.read_metrics else {}
+        except (ToolCallError, CircuitOpenError) as e:  # record the fix unverified; the note is not lost
+            log.warning("re-check for %s failed: %s", incident_id, e)
+            metrics = {}
         thresholds = slo_thresholds()
         verified = bool(metrics) and all(metrics[k] < t for k, t in thresholds.items() if k in metrics)
         row = {"incident_id": incident_id, "recorded_by": recorded_by, "how_fixed": how_fixed,
@@ -250,6 +282,8 @@ class IncidentService:
         await self.audit.append("MANUAL_RESOLUTION_RECORDED", "human", recorded_by,
                                 {k: row[k] for k in ("how_fixed", "category", "verified", "metrics")}, incident_id)
         proposal = draft_runbook(v, category, how_fixed) if verified else None
+        if proposal and any(pr["id"] == proposal["id"] for pr in await self.store.proposals()):
+            proposal = None                     # one proposal per incident; the first verified fix wins
         if proposal:
             await self.store.add_proposal(proposal, incident_id)
             await self.audit.append("RUNBOOK_PROPOSED", "system", "orchestrator", proposal, incident_id)

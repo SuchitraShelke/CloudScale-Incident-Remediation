@@ -2,6 +2,7 @@
 
 import time
 
+from cloudscale.orchestrator.tools import ToolCallError
 from tests.test_api import api, login, settle, start  # noqa: F401  (api is a fixture)
 
 HEALTHY = {"memory_usage_pct": 40.0, "error_rate_pct": 0.2, "request_latency_p99_ms": 180.0, "cpu_usage_pct": 30.0}
@@ -57,3 +58,20 @@ async def test_viewer_cannot_record_and_only_escalated_incidents_accept_a_fix(ap
     assert (await client.post(f"/incidents/{iid}/resolution", json=FIX, headers=viewer)).status_code == 403
     assert (await client.post(f"/incidents/{iid}/resolution", json=FIX, headers=sre)).status_code == 409
     assert (await client.get(f"/incidents/{iid}/handoff", headers=sre)).status_code == 404
+
+
+async def test_unreadable_metrics_record_the_fix_unverified_and_repeat_fixes_dont_duplicate(api):  # noqa: F811
+    client, env = api
+    h = await login(client, "sre1", "s")
+    iid = await escalated(client, env, h)
+    async def broken(inc):
+        raise ToolCallError("get_metrics", "tool_failed: metrics backend down")
+    env["service"].read_metrics = broken
+    r = await client.post(f"/incidents/{iid}/resolution", json=FIX, headers=h)
+    assert r.status_code == 200 and r.json()["verified"] is False
+    async def healthy(inc):
+        return HEALTHY
+    env["service"].read_metrics = healthy
+    for _ in range(2):
+        await client.post(f"/incidents/{iid}/resolution", json=FIX, headers=h)
+    assert len((await client.get("/runbooks/proposals", headers=h)).json()) == 1

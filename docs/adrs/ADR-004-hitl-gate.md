@@ -30,5 +30,6 @@ The platform must act autonomously on safe fixes and stop for humans on risky on
 ## Consequences
 - The jury can read every decision's reasons: the gate records, per step, e.g. `matrix:DESTRUCTIVE@0.86, impact_usd>50000`.
 - OPA enforces the destructive rule a second time on the tool side: no human approver, no destructive call.
+- **One decision per gate.** A resume claims the incident before anything else; a second decision (another human or the timer) while the first is queued or running gets 409 and isn't audited as a decision. The claim and the timer live in the orchestrator process, which is fine for one replica. Production with several replicas moves both to a Redis lock with a lease (or a single elected sweeper).
 
 **In the code:** `common/gate.py`, `common/gate_policy.yaml`, `tests/test_gate.py` (every cell and override), `orchestrator/api.py` (decisions), `orchestrator/service.py` (`sweep_deadlines`, `record_resolution`), `tests/test_hitl_timeouts.py`, `tests/test_manual_resolution.py`.
