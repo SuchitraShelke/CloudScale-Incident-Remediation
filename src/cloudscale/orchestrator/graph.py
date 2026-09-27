@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from cloudscale.common.canonical import args_hash, idempotency_key, plan_hash
 from cloudscale.common.gate import classify, evaluate_plan, load_policy
-from cloudscale.common.runbooks import score_evidence, slo_thresholds
+from cloudscale.common.runbooks import load_catalogue, score_evidence, slo_thresholds
 from cloudscale.common.safety.llama_guard import Guard
 from cloudscale.common.safety.normalizer import clean_log
 from cloudscale.common.safety.scrubber import scrub
@@ -38,6 +38,7 @@ from cloudscale.orchestrator.llm.base import LLM
 from cloudscale.orchestrator.llm.claude import BudgetExceeded
 from cloudscale.orchestrator.tools import ToolCallError, ToolClient
 
+MANUAL_RUNBOOKS = {rb["id"] for rb in load_catalogue()["runbooks"] if rb.get("manual")} | {"RB-ONCALL"}
 TERMINAL = {"QUARANTINED", "ESCALATED", "REJECTED", "RESOLVED", "PARTIALLY_RESOLVED", "FAILED"}
 MAX_PLAN_ATTEMPTS = 2
 
@@ -130,6 +131,20 @@ def traced(name: str, fn):
 def trace_status_error(msg: str):
     from opentelemetry.trace import Status, StatusCode
     return Status(StatusCode.ERROR, msg)
+
+
+def _requested_actions(plan: dict, results: list[dict]) -> list[dict]:
+    """What was asked for and whether it worked, without raw tool output. The raw output carries the whole
+    deployment record, and a summarizer given it reported unchanged fields (image tag, pool size) as changes."""
+    steps = {s["step_id"]: s for s in plan["steps"]}
+    out = []
+    for r in results:
+        step = steps.get(r["step_id"].removesuffix("-rollback"), {})
+        call = (step.get("rollback") if r["step_id"].endswith("-rollback") else step.get("call")) or {}
+        args = {k: v for k, v in (call.get("tool_args") or {}).items() if k != "scope"}
+        out.append({"step_id": r["step_id"], "tool": r.get("tool") or step.get("runbook_ref"), "status": r["status"],
+                    "requested_change": args})
+    return out
 
 
 def _read_token(deps: Deps, inc: dict) -> str:
@@ -245,8 +260,9 @@ def build_graph(deps: Deps, checkpointer=None):
         mismatch = False
         for step in plan.steps:
             if step.kind == "manual_runbook":
-                if not step.runbook_ref:
-                    errors.append(f"{step.step_id}: manual step without runbook_ref")
+                if step.runbook_ref not in MANUAL_RUNBOOKS:
+                    errors.append(f"{step.step_id}: manual step must use one of {sorted(MANUAL_RUNBOOKS)} and only "
+                                  f"when no tool can mitigate the problem (got {step.runbook_ref!r})")
                 continue
             if step.call is None:
                 errors.append(f"{step.step_id}: tool step without a call")
@@ -403,13 +419,14 @@ def build_graph(deps: Deps, checkpointer=None):
         thresholds = slo_thresholds()
         baseline = state["observations"]["metrics"]
         handed_off = any(r["status"] == "HANDED_OFF" for r in results)
+        tool_ran = any(r["status"] == "OK" for r in results)
         read, waited, polls = _read_token(deps, inc), 0.0, 0
         while True:
             m = (await deps.tools.call("get_metrics", {"scope": _scope(inc), "service": inc["affected_service"]},
                                        read))["metrics"]
             polls += 1
             healthy = all(m[k] < t for k, t in thresholds.items() if k in m)
-            if healthy or handed_off or waited >= deps.verify_timeout_s:
+            if healthy or (handed_off and not tool_ran) or waited >= deps.verify_timeout_s:
                 break
             await deps.sleep(deps.poll_interval_s)
             waited += deps.poll_interval_s
@@ -426,6 +443,7 @@ def build_graph(deps: Deps, checkpointer=None):
                         "thresholds": thresholds, "polls": polls, "waited_s": waited}
         try:
             summary, usage = await deps.llm.summarize({"incident": inc, "results": results,
+                                                       "actions": _requested_actions(state["plan"], results),
                                                        "verification": verification, "spent_usd": _spent(state)})
             usage_rows = [{"agent": "evaluator", **usage.model_dump()}]
         except BudgetExceeded:

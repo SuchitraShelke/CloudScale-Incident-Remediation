@@ -7,6 +7,7 @@ from pathlib import Path
 
 import anthropic
 import httpx
+import openai
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -25,6 +26,7 @@ from cloudscale.orchestrator.cache import FastEmbedder, SemanticCache
 from cloudscale.orchestrator.graph import Deps, build_graph
 from cloudscale.orchestrator.ledger import TokenLedger
 from cloudscale.orchestrator.llm.claude import ClaudeLLM
+from cloudscale.orchestrator.llm.openai_llm import OpenAILLM, parse_price
 from cloudscale.orchestrator.llm.scripted import ScriptedLLM
 from cloudscale.orchestrator.service import IncidentService
 from cloudscale.orchestrator.store import PgIncidentStore
@@ -32,6 +34,30 @@ from cloudscale.orchestrator.tools import ToolClient
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cloudscale.orchestrator")
+
+
+def select_llm(s):
+    """LLM_MODE=scripted|live; LLM_PROVIDER=anthropic|openai. Live without a key falls back to scripted."""
+    if s.llm_mode == "live" and s.llm_provider == "openai" and s.openai_api_key:
+        llm = OpenAILLM(openai.AsyncOpenAI(api_key=s.openai_api_key, max_retries=1), s.openai_model_deep,
+                        s.openai_model_fast, {s.openai_model_deep: parse_price(s.openai_price_deep),
+                                              s.openai_model_fast: parse_price(s.openai_price_fast)})
+        log.info("LLM mode: live, OpenAI (%s / %s, scripted fallback)", s.openai_model_deep, s.openai_model_fast)
+    elif s.llm_mode == "live" and s.llm_provider == "anthropic" and s.anthropic_api_key:
+        llm = ClaudeLLM(anthropic.AsyncAnthropic(api_key=s.anthropic_api_key, max_retries=1), s.model_deep, s.model_fast)
+        log.info("LLM mode: live, Anthropic (%s / %s, scripted fallback)", s.model_deep, s.model_fast)
+    else:
+        llm = ScriptedLLM()
+        log.info("LLM mode: scripted%s", f" (LLM_MODE=live but no key for {s.llm_provider})"
+                 if s.llm_mode == "live" else "")
+    return llm
+
+
+def llm_status(s) -> str:
+    if s.llm_mode != "live":
+        return "scripted"
+    key = s.openai_api_key if s.llm_provider == "openai" else s.anthropic_api_key
+    return f"live ({s.llm_provider})" if key else "scripted"
 
 
 @asynccontextmanager
@@ -51,12 +77,7 @@ async def lifespan(app: FastAPI):
     audit_pool = AsyncConnectionPool(s.audit_dsn, min_size=1, max_size=5, open=False)
     await pool.open()
     await audit_pool.open()
-    if s.llm_mode == "live" and s.anthropic_api_key:
-        llm = ClaudeLLM(anthropic.AsyncAnthropic(api_key=s.anthropic_api_key, max_retries=1), s.model_deep, s.model_fast)
-        log.info("LLM mode: live (%s / %s, scripted fallback)", s.model_deep, s.model_fast)
-    else:
-        llm = ScriptedLLM()
-        log.info("LLM mode: scripted%s", " (LLM_MODE=live but no ANTHROPIC_API_KEY)" if s.llm_mode == "live" else "")
+    llm = select_llm(s)
     deps = Deps(llm=llm, tools=ToolClient(s.mcp_url, redis, s.breaker_threshold, s.breaker_cooldown_s),
                 issuer=TokenIssuer(load_private_key(Path(s.token_private_key_path))),
                 guard=Guard(s.ollama_url, s.guard_model, s.guard_timeout_s, RedisGuardCache(redis)),
@@ -105,5 +126,4 @@ async def livez() -> dict:
 async def health() -> dict:
     s = get_settings()
     deps = await probe(s, ["postgres", "redis", "ollama", "opa", "mcp-server"])
-    live = s.llm_mode == "live" and bool(s.anthropic_api_key)
-    return {"service": "orchestrator", "llm_mode": "live" if live else "scripted", "deps": deps}
+    return {"service": "orchestrator", "llm_mode": llm_status(s), "deps": deps}

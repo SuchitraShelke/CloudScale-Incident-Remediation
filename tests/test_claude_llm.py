@@ -70,7 +70,7 @@ async def test_sonnet_request_shape_and_cost():
     client = FakeClient({DEEP: ok(TRIAGE)})
     out, u = await ClaudeLLM(client, DEEP, FAST).triage(ctx())
     call = client.calls[0]
-    assert call["output_config"] == {"effort": "medium"} and call["output_format"] is TriageOut
+    assert call["output_config"] == {"effort": "medium"} and call["output_format"].__name__ == "_Triage"
     assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert "<incident_data>" in call["messages"][0]["content"] and "temperature" not in call
     assert out.llm_confidence == 1.0                                   # clamped

@@ -1,4 +1,5 @@
-"""Live Claude LLM with tiered model routing, budgets and failover.
+"""Provider-neutral routed LLM (RoutedLLM) + the Anthropic Claude provider (ClaudeLLM).
+OpenAI lives in openai_llm.py and reuses everything here except the API call and cost math.
 
 Routing (rubric: tiered model routing):
   triage / planner: Sonnet 5 for P1 or tier-1 services, else Haiku 4.5; evaluator summary: always Haiku 4.5
@@ -10,6 +11,7 @@ untrusted incident data only inside <incident_data> in the user turn.
 
 import json
 import logging
+import re
 from typing import Any, Literal
 
 import anthropic
@@ -44,6 +46,14 @@ class LLMUnavailable(Exception):
 
 ToolLiteral = Literal["get_metrics", "fetch_k8s_logs", "get_deployment_status", "clear_pod_cache",
                       "restart_service", "apply_hotfix", "rollback_deployment"]
+
+
+class _Triage(BaseModel):
+    """LLM-facing triage schema: no defaults, so strict structured outputs (OpenAI) accept it."""
+    root_cause: str
+    root_cause_category: str
+    llm_confidence: float
+    affected_services: list[str]
 
 
 class _Call(BaseModel):
@@ -84,11 +94,21 @@ def _to_plan(p: _Plan) -> RemediationPlan:
             args = {"_invalid_json": c.tool_args_json}     # validate_plan rejects it and re-plans
         return {"tool_name": c.tool_name, "tool_args": args if isinstance(args, dict) else {"_invalid": args}}
 
+    def step_id(raw: str, n: int, seen: set[str]) -> str:
+        # Step IDs end up in exec tokens and idempotency keys, so they must match ^[a-z0-9-]{1,40}$.
+        # Models pick their own ("S1", "Step 1"): normalize deterministically and keep them unique.
+        sid = re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-")[:40] or f"step-{n}"
+        while sid in seen:
+            sid = f"{sid[:36]}-{n}"
+        seen.add(sid)
+        return sid
+
+    seen: set[str] = set()
     return RemediationPlan.model_validate({
         "summary": p.summary,
-        "steps": [{"step_id": s.step_id, "kind": s.kind, "call": call(s.call), "runbook_ref": s.runbook_ref,
+        "steps": [{"step_id": step_id(s.step_id, n, seen), "kind": s.kind, "call": call(s.call), "runbook_ref": s.runbook_ref,
                    "llm_claims_destructive": s.llm_claims_destructive, "estimated_impact": s.estimated_impact,
-                   "rollback": call(s.rollback)} for s in p.steps],
+                   "rollback": call(s.rollback)} for n, s in enumerate(p.steps, start=1)],
         "artifacts": [a.model_dump() for a in p.artifacts],
     })
 
@@ -124,10 +144,16 @@ def _incident_block(ctx: dict[str, Any]) -> str:
     return f"<incident_data>\n{json.dumps(data, indent=1)}\n</incident_data>"
 
 
-class ClaudeLLM:
-    def __init__(self, client: anthropic.AsyncAnthropic, deep: str, fast: str, fallback: ScriptedLLM | None = None):
+class RoutedLLM:
+    """Routing, budgets, failover and prompts. Providers implement _parse() and set `retryable`."""
+    retryable: tuple[type[Exception], ...] = ()
+
+    def __init__(self, client, deep: str, fast: str, fallback: ScriptedLLM | None = None):
         self.client, self.deep, self.fast = client, deep, fast
         self.fallback = fallback or ScriptedLLM()
+
+    async def _parse(self, model: str, agent: str, user: str, schema: type[BaseModel]):
+        raise NotImplementedError
 
     # ----- routing -----
     def route(self, agent: str, ctx: dict[str, Any]) -> str:
@@ -138,6 +164,81 @@ class ClaudeLLM:
             return self.fast
         inc = ctx["incident"]
         return self.deep if inc["severity"] == "P1" or inc["affected_service"] in TIER1 else self.fast
+
+    async def _call(self, agent: str, ctx: dict[str, Any], user: str, schema: type[BaseModel], scripted,
+                    convert=None):
+        """Try the routed model, then the fast model once, then the scripted fallback. `convert` runs inside the
+        try, so an answer that parses but can't become a valid domain object counts as a failed answer."""
+        first = self.route(agent, ctx)
+        chain = [first] + ([self.fast] if first != self.fast else [])
+        errors = []
+        for model in chain:
+            try:
+                out, usage = await self._parse(model, agent, user, schema)
+                if convert:
+                    out = convert(out)
+                if errors:
+                    usage = usage.model_copy(update={"failover": "; ".join(errors)})
+                return out, usage
+            except (*self.retryable, LLMUnavailable, ValidationError) as e:
+                errors.append(f"{model}: {type(e).__name__}")
+                log.warning("LLM %s failed for %s: %s", model, agent, e)
+        out, usage = await scripted(ctx)
+        return out, usage.model_copy(update={"failover": "; ".join(errors) + " -> scripted"})
+
+    # ----- agent calls -----
+    async def triage(self, ctx: dict[str, Any]) -> tuple[TriageOut, LLMUsage]:
+        user = (f"{_incident_block(ctx)}\n\nLive observations from read-only tools:\n"
+                f"metrics: {json.dumps(ctx['metrics'])}\nrecent pod logs:\n{ctx['logs']}\n"
+                f"deployment: {json.dumps(ctx['deployment'])}\n"
+                f"catalogue evidence (deterministic): {json.dumps(ctx['evidence'])}\n\n"
+                "Identify the most likely root cause and its category (use a catalogue category when one fits).")
+        out, usage = await self._call("triage", ctx, user, _Triage, self.fallback.triage)
+        out = TriageOut.model_validate(out.model_dump())
+        out = out.model_copy(update={"llm_confidence": min(1.0, max(0.0, out.llm_confidence))})
+        return out, usage
+
+    async def plan(self, ctx: dict[str, Any]) -> tuple[RemediationPlan, LLMUsage]:
+        errors = ctx.get("validation_errors") or []
+        user = (f"{_incident_block(ctx)}\n\nTriage result: {json.dumps(ctx['triage'])}\n"
+                f"Current deployment: {json.dumps(ctx['deployment'])}\nMetrics: {json.dumps(ctx['metrics'])}\n"
+                + (f"\nYour previous plan was rejected by validation: {errors}. Fix these problems.\n" if errors else "")
+                + "\nPropose the smallest safe remediation plan. Every destructive step needs a rollback call "
+                  "(rollback_deployment to the current revision). Prefer the least disruptive action that removes the "
+                  "root cause, and do not add changes the root cause doesn't need (e.g. clearing a runaway cache "
+                  "needs no memory increase). Only when the root cause IS insufficient capacity (a memory limit, a "
+                  "connection pool), size that change from the evidence (observed usage, waiting requests, traffic "
+                  "growth) with headroom, so the service is no longer saturated afterwards. Use a manual_runbook step (RB-AZ-FAILOVER or "
+                  "RB-ONCALL) only when no tool can mitigate the problem; put follow-up improvements in the "
+                  "summary, not as steps. Do not add read-only steps: verification is done separately. "
+                  "Artifacts are for human review only and are never executed.")
+
+        async def scripted(c):
+            return await self.fallback.plan(c)
+
+        out, usage = await self._call("planner", ctx, user, _Plan, scripted, convert=_to_plan)
+        return out, usage
+
+    async def summarize(self, ctx: dict[str, Any]) -> tuple[str, LLMUsage]:
+        class _Summary(BaseModel):
+            summary: str
+
+        actions = ctx.get("actions", ctx["results"])
+        user = ("Write a two-sentence summary for the on-call SRE of what was done and the result. Mention only "
+                "the changes listed under requested_change; do not describe any other setting as changed.\n"
+                f"Actions: {json.dumps(actions)[:4000]}\nVerification: {json.dumps(ctx['verification'])}")
+
+        async def scripted(c):
+            text, usage = await self.fallback.summarize(c)
+            return _Summary(summary=text), usage
+
+        out, usage = await self._call("evaluator", ctx, user, _Summary, scripted)
+        return out.summary, usage
+
+
+class ClaudeLLM(RoutedLLM):
+    """Anthropic: Sonnet 5 (adaptive thinking, effort medium) / Haiku 4.5, cached system prompt."""
+    retryable = (anthropic.APIError,)
 
     def _cost(self, model: str, u) -> float:
         cin, cout = PRICES.get(model, PRICES[self.deep])
@@ -170,60 +271,3 @@ class ClaudeLLM:
                          cost_usd=round(self._cost(model, u), 6))
         usage_extra = {"cache_read_tokens": getattr(u, "cache_read_input_tokens", 0) or 0}
         return resp.parsed_output, usage.model_copy(update=usage_extra)
-
-    async def _call(self, agent: str, ctx: dict[str, Any], user: str, schema: type[BaseModel], scripted):
-        """Try the routed model, then Haiku once, then the scripted fallback."""
-        first = self.route(agent, ctx)
-        chain = [first] + ([self.fast] if first != self.fast else [])
-        errors = []
-        for model in chain:
-            try:
-                out, usage = await self._parse(model, agent, user, schema)
-                if errors:
-                    usage = usage.model_copy(update={"failover": "; ".join(errors)})
-                return out, usage
-            except (anthropic.APIError, LLMUnavailable, ValidationError) as e:
-                errors.append(f"{model}: {type(e).__name__}")
-                log.warning("LLM %s failed for %s: %s", model, agent, e)
-        out, usage = await scripted(ctx)
-        return out, usage.model_copy(update={"failover": "; ".join(errors) + " -> scripted"})
-
-    # ----- agent calls -----
-    async def triage(self, ctx: dict[str, Any]) -> tuple[TriageOut, LLMUsage]:
-        user = (f"{_incident_block(ctx)}\n\nLive observations from read-only tools:\n"
-                f"metrics: {json.dumps(ctx['metrics'])}\nrecent pod logs:\n{ctx['logs']}\n"
-                f"deployment: {json.dumps(ctx['deployment'])}\n"
-                f"catalogue evidence (deterministic): {json.dumps(ctx['evidence'])}\n\n"
-                "Identify the most likely root cause and its category (use a catalogue category when one fits).")
-        out, usage = await self._call("triage", ctx, user, TriageOut, self.fallback.triage)
-        out = out.model_copy(update={"llm_confidence": min(1.0, max(0.0, out.llm_confidence))})
-        return out, usage
-
-    async def plan(self, ctx: dict[str, Any]) -> tuple[RemediationPlan, LLMUsage]:
-        errors = ctx.get("validation_errors") or []
-        user = (f"{_incident_block(ctx)}\n\nTriage result: {json.dumps(ctx['triage'])}\n"
-                f"Current deployment: {json.dumps(ctx['deployment'])}\nMetrics: {json.dumps(ctx['metrics'])}\n"
-                + (f"\nYour previous plan was rejected by validation: {errors}. Fix these problems.\n" if errors else "")
-                + "\nPropose the smallest safe remediation plan. Every destructive step needs a rollback call "
-                  "(rollback_deployment to the current revision). Use a manual_runbook step when no tool can "
-                  "fix the problem safely. Artifacts are for human review only and are never executed.")
-
-        async def scripted(c):
-            return await self.fallback.plan(c)
-
-        out, usage = await self._call("planner", ctx, user, _Plan, scripted)
-        return (out if isinstance(out, RemediationPlan) else _to_plan(out)), usage
-
-    async def summarize(self, ctx: dict[str, Any]) -> tuple[str, LLMUsage]:
-        class _Summary(BaseModel):
-            summary: str
-
-        user = (f"Write a two-sentence summary for the on-call SRE of what was done and the result.\n"
-                f"Actions: {json.dumps(ctx['results'])[:4000]}\nVerification: {json.dumps(ctx['verification'])}")
-
-        async def scripted(c):
-            text, usage = await self.fallback.summarize(c)
-            return _Summary(summary=text), usage
-
-        out, usage = await self._call("evaluator", ctx, user, _Summary, scripted)
-        return out.summary, usage

@@ -85,9 +85,15 @@ takes 15-45 s per warm call, ~160 s cold. So (`common/safety/`):
 Ollama runs with `OLLAMA_KEEP_ALIVE=-1` so the model stays loaded.
 
 ## LLM
-`claude-sonnet-5` (P1 triage/planning) ↔ `claude-haiku-4-5` (P2, summaries). Failover
-Sonnet → Haiku → scripted. `LLM_MODE=scripted|live`: scripted returns canned per-scenario
-responses (dev mode and offline demo fallback).
+Provider-neutral `RoutedLLM` (routing, budgets, failover, prompts, schemas) with two providers,
+chosen by `LLM_PROVIDER`:
+- **OpenAI (live, used for the demo):** `gpt-5.4` (P1 / tier-1 triage + planning) ↔ `gpt-5.4-mini`
+  (P2, summaries). Measured: $0.0227 per P1, $0.0055 per P2, $0.0008 per cache hit.
+- **Anthropic (tested with a fake client, no key):** `claude-sonnet-5` ↔ `claude-haiku-4-5`.
+
+Failover deep → fast → scripted. `LLM_MODE=scripted|live`: scripted returns canned per-alert
+responses (dev mode and offline demo fallback). After any LLM change, run `scripts/rehearse.py --crash`:
+a real model plans differently from the scripted answers (see ADR-006 "What live testing found").
 
 ## Observability
 OTel traces across API → graph nodes → LLM calls → MCP calls (traceparent propagated).

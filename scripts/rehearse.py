@@ -90,23 +90,36 @@ def main() -> int:
           if hit else "no cache hit (was the first s02 run RESOLVED?)")
 
     print("\nFault -> circuit breaker -> rollback")
+    # A live LLM decides the plan, so fail the LAST mutating step of whatever it proposed: any earlier
+    # mutating step has then completed and must be rolled back.
     compose("exec", "-T", "orchestrator", "python", "scripts/fault.py", "reset")
-    compose("exec", "-T", "orchestrator", "python", "scripts/fault.py", "inject", "restart_service", "1")
     iid = sre.post("/incidents", json={"scenario_id": "s01-oom-orders"}).json()["incident_id"]
     v = wait(sre, iid, lambda v: str(v.get("status", "")).startswith("AWAITING"))
+    mutating = [s for s in v["pending_decision"]["steps"] if s["op_class"] not in ("READ", "MANUAL")]
+    tool = next(st["call"]["tool_name"] for st in v["plan"]["steps"] if st["step_id"] == mutating[-1]["step_id"])
+    compose("exec", "-T", "orchestrator", "python", "scripts/fault.py", "inject", tool, "1")
     sre.post(f"/incidents/{iid}/decision", json={"outcome": "APPROVED", "plan_hash": v["pending_decision"]["plan_hash"]})
     v = wait(sre, iid, lambda v: v.get("terminal"))
     steps = [(r["step_id"], r["status"]) for r in v.get("results", [])]
-    check("fault rolls back the hotfix", v.get("status") == "ESCALATED" and
-          ("raise-memory-limit-rollback", "ROLLED_BACK") in steps, f"{v.get('status')}: {steps}")
+    opened = any(e.get("type") == "CIRCUIT_STATE_CHANGED" for e in v.get("events", []))
+    rolled = any(status == "ROLLED_BACK" for _, status in steps)
+    need_rollback = len(mutating) > 1
+    check(f"fault on {tool}: breaker opens" + (" + rollback" if need_rollback else ""),
+          v.get("status") == "ESCALATED" and opened and (rolled or not need_rollback), f"{v.get('status')}: {steps}")
     compose("exec", "-T", "orchestrator", "python", "scripts/fault.py", "reset")
 
     if "--crash" in sys.argv:
         print("\nCrash during an incident -> resume from checkpoint")
         iid = sre.post("/incidents", json={"scenario_id": "s02-cache-bloat"}).json()["incident_id"]
-        wait(sre, iid, lambda v: v.get("status") in ("VERIFYING", "RESOLVED"), 120)
+        v = wait(sre, iid, lambda v: v.get("status") in ("VERIFYING", "RESOLVED")
+                 or str(v.get("status", "")).startswith("AWAITING"), 120)
+        if str(v.get("status", "")).startswith("AWAITING"):      # a live planner may have added a gated step
+            user, pw = ROLE_FOR_GATE[v["pending_decision"]["gate"]]
+            session(user, pw).post(f"/incidents/{iid}/decision", json={
+                "outcome": "APPROVED", "plan_hash": v["pending_decision"]["plan_hash"]})
+            wait(sre, iid, lambda v: v.get("status") in ("VERIFYING", "RESOLVED"), 120)
         compose("kill", "-s", "SIGKILL", "orchestrator")          # no graceful shutdown
-        compose("up", "-d", "orchestrator")
+        compose("up", "-d", "--no-deps", "orchestrator")          # restart ONLY the orchestrator
         sre = session_when_up()
         v = wait(sre, iid, lambda v: v.get("terminal"), 180)
         resumed = any("INCIDENT_RESUMED" == r["event_type"] for r in sre.get("/audit", params={"incident_id": iid}).json())

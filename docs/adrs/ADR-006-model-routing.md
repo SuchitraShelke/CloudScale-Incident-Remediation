@@ -1,28 +1,48 @@
-# ADR-006: Tiered model routing with budget caps and failover
+# ADR-006: Tiered model routing behind a provider-neutral interface
 
 **Status:** Accepted · **Rubric:** Core Integration (fallback routes), Engineering Package (tiered model routing)
 
 ## Context
-Incident severity varies widely. A P1 on a payment path deserves the strongest reasoning; a P2 cache issue doesn't. LLM spend must be bounded per incident, and an API outage must not stop the platform.
+Incident severity varies widely. A P1 on a payment path deserves the strongest reasoning; a P2 cache issue doesn't. LLM spend must be bounded per incident, an API outage must not stop the platform, and the capstone team had an OpenAI key but no Anthropic key.
 
 ## Decision
+The agents call one `LLM` interface. **`RoutedLLM`** holds everything provider-neutral: routing, budget caps, failover, prompts and output schemas. Each provider adds only its API call and cost math. The choice is one setting, `LLM_PROVIDER=openai|anthropic`.
+
 | Agent | P1 or tier-1 service | Otherwise |
 |---|---|---|
-| Triage, Planner | `claude-sonnet-5` (adaptive thinking, effort `medium`) | `claude-haiku-4-5` |
-| Evaluator summary | `claude-haiku-4-5` | `claude-haiku-4-5` |
+| Triage, Planner | deep model | fast model |
+| Evaluator summary | fast model | fast model |
 
-- **Budget:** incident spend ≥ $0.50 → Haiku only; ≥ $1.00 → no more LLM calls, escalate to a human.
-- **Failover:** Sonnet error, timeout or refusal → Haiku once → scripted fallback. Each hop is recorded as a `PROVIDER_FAILOVER` event and on the token ledger.
-- **Prompting:** trusted instructions, the runbook catalogue and tool schemas go in a cached system prompt. Untrusted incident data goes only inside `<incident_data>`. Output uses structured outputs with a Pydantic schema, then strict validation.
-- **Determinism for demos:** `LLM_MODE=scripted` returns canned per-alert answers, used for tests and as an offline demo fallback.
+| Provider | Deep | Fast | Status in the capstone |
+|---|---|---|---|
+| **OpenAI** (Responses API) | `gpt-5.4`, reasoning effort medium | `gpt-5.4-mini`, effort low | **Live-verified**: full rehearsal passes against ground truth |
+| Anthropic (Messages API) | `claude-sonnet-5`, adaptive thinking, effort medium | `claude-haiku-4-5` | Built and tested with a fake client; no key available |
+
+- **Budget:** incident spend ≥ $0.50 → fast model only; ≥ $1.00 → no more LLM calls, escalate to a human.
+- **Failover:** deep model error, timeout, refusal, incomplete answer, or an answer that can't become a valid plan → fast model once → scripted fallback. Every hop is a `PROVIDER_FAILOVER` event and a ledger row.
+- **Prompting:** trusted instructions, the runbook catalogue and tool schemas go in the system prompt, which is cached (OpenAI automatically, keyed per agent; Anthropic via `cache_control`). Untrusted incident data goes only inside `<incident_data>`. Output is a strict structured-output schema, then domain validation.
+- **Data handling:** OpenAI requests use `store=False`, so incident data isn't retained for later retrieval.
+- **Determinism for demos and tests:** `LLM_MODE=scripted` returns canned per-alert answers.
+
+## What live testing found (and the deterministic fix for each)
+A real model plans differently from canned answers. The first live rehearsals failed 4 of 12 checks, and each failure became a guardrail rather than a prompt tweak alone:
+
+| Observed | Risk | Fix |
+|---|---|---|
+| Summary called unchanged settings (image tag, pool size) "changes" | Misinformation to the on-call SRE (OWASP LLM09) | The summarizer sees only *requested* changes and verified metrics, never raw tool output |
+| Pool raised 20 → 30 while 147 requests were waiting | Undersized fix | Prompt: size capacity from the evidence; the simulator gives partial recovery, so the Evaluator reports PARTIALLY_RESOLVED |
+| A manual "follow-up" step on a solvable problem | Needless escalation | `validate_plan` only accepts real manual runbooks (RB-AZ-FAILOVER, RB-ONCALL) → re-plan |
+| A memory hotfix added to a cache problem | Over-remediation | Prompt: least disruptive action that removes the root cause. The gate had already required approval for it |
+| Step ID `"S1"` crashed plan conversion | Pipeline failure | Deterministic normalization; any unconvertible answer counts as a failed answer and fails over |
+
+Throughout, the safety layers held: destructive steps always went to a human, and an insufficient fix was never marked RESOLVED.
 
 ## Alternatives considered
-- **One model everywhere:** simpler, and one cache namespace, but at list prices all-Sonnet costs about 1.8× the routed mix (see `docs/financial/tco-roi-model.md`).
-- **Multiple providers:** more resilience, but more keys, prompts and evaluation surface. Deferred; the failover chain already reaches a no-network fallback.
+- **One model everywhere:** simpler, but costs more per incident (see `docs/financial/tco-roi-model.md`).
+- **Cross-provider failover (OpenAI → Anthropic):** supported by the design, since both providers implement the same interface. It isn't wired, because it needs both keys.
 
 ## Consequences
-- The router is plain code, so its choices are testable (`tests/test_claude_llm.py`) and visible in the ledger.
-- Haiku 4.5 takes no `effort` parameter; the client only sends it to Sonnet.
-- **Verified here:** routing, budgets, failover and cost math, with a fake client, and the full failover chain live (the configured key returned 401, so every call fell back to scripted). **Not yet measured:** real token counts and costs from live Claude calls.
+- Routing is plain code and testable (`tests/test_claude_llm.py`, `tests/test_openai_llm.py`), and every call is visible in the token ledger.
+- Live model output varies between runs. `scripts/rehearse.py` is the go/no-go check before a demo, and `LLM_MODE=scripted` is the fallback.
 
-**In the code:** `orchestrator/llm/claude.py`, `orchestrator/llm/scripted.py`, `orchestrator/ledger.py`.
+**In the code:** `orchestrator/llm/claude.py` (`RoutedLLM`, `ClaudeLLM`), `orchestrator/llm/openai_llm.py`, `orchestrator/llm/scripted.py`, `orchestrator/ledger.py`.

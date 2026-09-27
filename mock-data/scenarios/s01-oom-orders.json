@@ -10,18 +10,48 @@
     "namespace": "production",
     "cloud_provider": "aws",
     "cloud_region": "us-east-1",
-    "telemetry": {"source": "prometheus", "cpu_usage_pct": 45.2, "memory_usage_pct": 98.7,
-                  "error_rate_pct": 23.4, "request_latency_p99_ms": 4500, "pod_restarts_last_1h": 12},
+    "telemetry": {
+      "source": "prometheus",
+      "cpu_usage_pct": 45.2,
+      "memory_usage_pct": 98.7,
+      "error_rate_pct": 23.4,
+      "request_latency_p99_ms": 4500,
+      "pod_restarts_last_1h": 12
+    },
     "log_excerpt": "2026-09-26T10:14:58Z ERROR orders-7f9c: java.lang.OutOfMemoryError: Java heap space\n2026-09-26T10:14:59Z WARN kubelet: container orders killed, Reason: OOMKilled, exit code 137\n2026-09-26T10:15:01Z INFO kubelet: Back-off restarting failed container orders",
-    "tags": ["kubernetes", "memory", "orders"]
+    "tags": [
+      "kubernetes",
+      "memory",
+      "orders"
+    ]
   },
   "simulation": {
     "deployments": {
-      "orders-service": {"replicas": 3, "revision": 14, "previous_revision": 13, "image_tag": "v2.8.1",
-                         "resources": {"limits": {"memory": "1Gi", "cpu": "1000m"}}, "connection_pool_max_size": 30}
+      "orders-service": {
+        "replicas": 3,
+        "revision": 14,
+        "previous_revision": 13,
+        "image_tag": "v2.8.1",
+        "resources": {
+          "limits": {
+            "memory": "1Gi",
+            "cpu": "1000m"
+          }
+        },
+        "connection_pool_max_size": 30
+      }
     },
-    "initial_metrics": {"cpu_usage_pct": 45.2, "memory_usage_pct": 98.7, "error_rate_pct": 23.4, "p99_ms": 4500},
-    "healthy_thresholds": {"memory_usage_pct": 80, "error_rate_pct": 1, "p99_ms": 500},
+    "initial_metrics": {
+      "cpu_usage_pct": 45.2,
+      "memory_usage_pct": 98.7,
+      "error_rate_pct": 23.4,
+      "p99_ms": 4500
+    },
+    "healthy_thresholds": {
+      "memory_usage_pct": 80,
+      "error_rate_pct": 1,
+      "p99_ms": 500
+    },
     "logs": [
       "2026-09-26T10:14:50Z INFO orders-7f9c: processed 1204 orders/min, heap used 978Mi of 1024Mi",
       "2026-09-26T10:14:58Z ERROR orders-7f9c: java.lang.OutOfMemoryError: Java heap space",
@@ -29,17 +59,72 @@
       "2026-09-26T10:15:01Z INFO kubelet: Back-off restarting failed container orders"
     ],
     "effects": [
-      {"when": {"tool": "apply_hotfix", "patch.resources.limits.memory": "2Gi"},
-       "then": {"recover_to": {"memory_usage_pct": 55, "error_rate_pct": 0.4, "p99_ms": 320}, "over_seconds": 20}},
-      {"when": {"tool": "restart_service"},
-       "then": {"recover_to": {"error_rate_pct": 8, "p99_ms": 1800}, "over_seconds": 10, "relapse_after_seconds": 60}},
-      {"when": {"tool": "rollback_deployment"},
-       "then": {"recover_to": {"memory_usage_pct": 98.7, "error_rate_pct": 23.4, "p99_ms": 4500}, "over_seconds": 5}}
+      {
+        "when": {
+          "tool": "apply_hotfix",
+          "patch.resources.limits.memory": {
+            "gte": "1536Mi"
+          }
+        },
+        "then": {
+          "recover_to": {
+            "memory_usage_pct": 55,
+            "error_rate_pct": 0.4,
+            "p99_ms": 320
+          },
+          "over_seconds": 20
+        }
+      },
+      {
+        "when": {
+          "tool": "apply_hotfix",
+          "patch.resources.limits.memory": {
+            "gte": "1100Mi"
+          }
+        },
+        "then": {
+          "recover_to": {
+            "memory_usage_pct": 88,
+            "error_rate_pct": 6,
+            "p99_ms": 1600
+          },
+          "over_seconds": 20
+        }
+      },
+      {
+        "when": {
+          "tool": "restart_service"
+        },
+        "then": {
+          "recover_to": {
+            "error_rate_pct": 8,
+            "p99_ms": 1800
+          },
+          "over_seconds": 10,
+          "relapse_after_seconds": 60
+        }
+      },
+      {
+        "when": {
+          "tool": "rollback_deployment"
+        },
+        "then": {
+          "recover_to": {
+            "memory_usage_pct": 98.7,
+            "error_rate_pct": 23.4,
+            "p99_ms": 4500
+          },
+          "over_seconds": 5
+        }
+      }
     ]
   },
   "ground_truth": {
     "root_cause_category": "memory_limit_too_low",
-    "expected_actions": ["apply_hotfix:resources.limits.memory", "restart_service"],
+    "expected_actions": [
+      "apply_hotfix:resources.limits.memory",
+      "restart_service"
+    ],
     "expected_gate": "APPROVAL",
     "expected_final_status": "RESOLVED"
   }

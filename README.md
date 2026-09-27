@@ -5,7 +5,7 @@ A multi-agent system that triages infrastructure incidents, plans fixes, and app
 - **Agents:** LangGraph with a deterministic supervisor, plus Triage, Planner, Executor and Evaluator.
 - **Tools:** a real MCP server (streamable HTTP) with 7 tools on a stateful infrastructure simulator.
 - **Governance:** a per-step HITL gate (confidence, operation class, financial impact, policy violations), layered guardrails, signed single-use tool tokens and an OPA default-deny policy.
-- **Operations:** OpenTelemetry traces and metrics, a hash-chained audit log in Postgres, a semantic cache (pgvector), tiered Claude routing with failover, and a 3-year TCO/ROI model.
+- **Operations:** OpenTelemetry traces and metrics, a hash-chained audit log in Postgres, a semantic cache (pgvector), tiered LLM routing (OpenAI or Claude) with failover, and a 3-year TCO/ROI model.
 
 ## Quick start
 
@@ -27,7 +27,7 @@ uv run python scripts/health_check.py
 | Grafana dashboard | http://localhost:3000 | none (local demo) |
 | Traces | http://localhost:16686 | search tag `incident.id` |
 
-To use Claude, set `ANTHROPIC_API_KEY` and `LLM_MODE=live` in `.env`, then run `docker compose up -d orchestrator`.
+To use a real model, set `LLM_MODE=live` plus `LLM_PROVIDER=openai` and `OPENAI_API_KEY` (or `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`) in `.env`, then run `docker compose up -d --no-deps orchestrator`. Afterwards run `uv run python scripts/rehearse.py --crash`, because a real model plans differently from the scripted answers.
 
 ## Demo scenarios
 
@@ -74,7 +74,7 @@ This is a 2-day prototype of a larger blueprint. What the prototype actually doe
 | HITL gate: APPROVAL / ESCALATION, roles, plan-version binding | REVIEW auto-proceed timer, approve-with-modifications |
 | Guardrails, scrubber, validators, Ed25519 tokens, OPA | mTLS / service mesh, OIDC login |
 | Circuit breaker, read retries, rollback, LLM failover | Helm charts and cloud deployment (ADR-007 is the target) |
-| Hash-chained audit log, OTel traces + 7 metrics, Grafana | A2A federation, multi-provider LLMs |
-| Semantic cache, token ledger, Claude routing | Live Claude run: built and tested with a fake client; pending a valid key |
+| Hash-chained audit log, OTel traces + 7 metrics, Grafana | A2A federation; cross-provider failover (needs both keys) |
+| Semantic cache, token ledger, tiered routing: **OpenAI live-verified**, Claude tested with a fake client | Simulator state persistence (lives in the MCP server's memory; restart only the orchestrator) |
 
 **Dev-machine note:** built on a VMware VM running Docker in WSL2 (nested virtualization). Llama Guard is very slow there, so the guard runs heuristics first and fails closed on high-risk text (ADR-005).

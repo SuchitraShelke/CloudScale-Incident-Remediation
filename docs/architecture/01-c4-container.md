@@ -32,7 +32,7 @@ flowchart LR
         grafana[Grafana<br/>dashboard]
     end
 
-    claude[Claude API<br/>Sonnet 5 · Haiku 4.5]
+    claude[LLM provider<br/>OpenAI gpt-5.4 · gpt-5.4-mini<br/>or Claude Sonnet 5 · Haiku 4.5]
 
     sre -->|HTTPS| console
     alerts -->|incident JSON| orch
@@ -40,7 +40,7 @@ flowchart LR
     orch -->|MCP streamable HTTP<br/>scoped Ed25519 token in _meta| mcp
     mcp -->|policy decision| opa
     orch -->|untrusted text only| guard
-    orch -->|Messages API| claude
+    orch -->|structured outputs| claude
     orch --> pg
     orch --> redis
     mcp --> pg

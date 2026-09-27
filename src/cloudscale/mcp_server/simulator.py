@@ -28,6 +28,26 @@ class _Transition:
     relapse_after_s: float | None
 
 
+def _quantity(v: Any) -> float | None:
+    """Numbers as-is; Kubernetes quantities (512Mi, 2Gi) in MiB."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    if isinstance(v, str) and v[:-2].isdigit() and v[-2:] in ("Mi", "Gi"):
+        return float(v[:-2]) * (1024 if v[-2:] == "Gi" else 1)
+    return None
+
+
+def _matches(actual: Any, expected: Any) -> bool:
+    """Effect rule condition: a literal, or {"gte": x} / {"lt": x} compared as numbers or quantities.
+    Thresholds let any sufficient fix work (a planner choosing 60 instead of 50 still recovers)."""
+    if isinstance(expected, dict) and set(expected) <= {"gte", "lt"}:
+        a = _quantity(actual)
+        if a is None:
+            return False
+        return all(a >= _quantity(v) if op == "gte" else a < _quantity(v) for op, v in expected.items())
+    return actual == expected
+
+
 def _lookup(obj: Any, dotted: str) -> Any:
     for part in dotted.split("."):
         if not isinstance(obj, dict) or part not in obj:
@@ -107,7 +127,7 @@ class IncidentSim:
     def _run_effects(self, tool: str, args: dict[str, Any]) -> None:
         call = {"tool": tool, **args}
         for effect in self.simulation.get("effects", []):
-            if all(_lookup(call, k) == v for k, v in effect["when"].items()):
+            if all(_matches(_lookup(call, k), v) for k, v in effect["when"].items()):
                 then = effect["then"]
                 # Metrics are lower-is-better. Rollback may worsen them on purpose ("undo the fix");
                 # any other action only moves a metric if it beats where it is already heading,

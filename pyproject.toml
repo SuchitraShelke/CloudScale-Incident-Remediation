@@ -25,6 +25,7 @@ dependencies = [
   "opentelemetry-exporter-otlp",
   "opentelemetry-instrumentation-fastapi",
   "opentelemetry-instrumentation-httpx",
+  "openai>=3.19.2",
 ]
 
 [dependency-groups]

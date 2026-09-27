@@ -4,8 +4,10 @@ results computed independently in Python, so the two can be cross-checked.
     uv run --with openpyxl python scripts/tco_model.py            # build + print Python results
     uv run --with openpyxl --with formulas python scripts/tco_model.py --verify   # also evaluate the xlsx
 
-Inputs are the blueprint's (CapstoneProjectPlan_v2.md §12, §17) except the Year-0 build line, which is
-the actual solo build (1 developer + Claude, ~24 h) instead of 10 engineers x 12 h.
+Inputs are the blueprint's (CapstoneProjectPlan_v2.md §12, §17) with two corrections:
+- Year-0 build: the actual solo build (1 developer + Claude, ~24 h) instead of 10 engineers x 12 h
+- LLM cost per incident: MEASURED on OpenAI (gpt-5.4 / gpt-5.4-mini) from the token ledger over the live
+  rehearsals. The Claude figures stay as a modeled comparison (no Anthropic key was available).
 """
 
 import json
@@ -35,6 +37,10 @@ I = {
     "agents": [("Triage", 8192, 2048), ("Planner", 4096, 3072), ("Evaluator summary", 2048, 1024)],
     "p1_share": 0.40, "cache_hit": 0.20, "overhead": 1.3,
     "shift": 0.15, "slow_adoption": [0.50, 0.70, 0.75], "vol_cut": 0.30,
+    # measured on OpenAI (token ledger, live rehearsals on 2026-09-27; $ per incident / per call)
+    "m_p1": 0.0227, "m_p2": 0.0055, "m_hit": 0.0008, "m_n": (21, 7, 13), "m_cached": 0.76,
+    "m_triage_deep": 0.00576, "m_planner_deep": 0.01606, "m_eval_in": 3138, "m_eval_out": 86,
+    "oa_deep": (2.50, 0.25, 15.00),     # gpt-5.4: input, cached input, output per 1M (user-confirmed)
 }
 
 
@@ -48,7 +54,15 @@ def compute() -> dict:
     tp_part = p1 * (s[0] + s[1]) + (1 - p1) * (h[0] + h[1])
     strategies = {"all_sonnet": all_sonnet * I["overhead"], "routed": routed * I["overhead"],
                   "routed_cache": (routed - I["cache_hit"] * tp_part) * I["overhead"]}
-    cpi = strategies["routed_cache"]
+    claude_cpi = strategies["routed_cache"]
+    d_in, d_cached, d_out = I["oa_deep"]
+    eval_deep = (I["m_eval_in"] * ((1 - I["m_cached"]) * d_in + I["m_cached"] * d_cached)
+                 + I["m_eval_out"] * d_out) / 1e6
+    oa_all_deep = I["m_triage_deep"] + I["m_planner_deep"] + eval_deep
+    oa_routed = p1 * I["m_p1"] + (1 - p1) * I["m_p2"]
+    oa_routed_cache = (1 - I["cache_hit"]) * oa_routed + I["cache_hit"] * I["m_hit"]
+    openai = {"all_deep": oa_all_deep, "routed": oa_routed, "routed_cache": oa_routed_cache}
+    cpi = oa_routed_cache
 
     inc = [I["inc_y1"] * (1 + I["growth"]) ** n for n in range(3)]
     infra = [sum(v[y] for _, v in I["infra"]) for y in range(3)]
@@ -93,6 +107,7 @@ def compute() -> dict:
     }
     strat_3yr = {k: sum(inc[y] * 12 * v for y in range(3)) for k, v in strategies.items()}
     return {"agent_cost_sonnet": s, "agent_cost_haiku": h, "strategies": strategies, "strategy_3yr": strat_3yr,
+            "openai": openai, "claude_cpi": claude_cpi,
             "cost_per_incident": cpi, "p1_cpi": routed_p1 * I["overhead"], "incidents_pm": inc, "infra_pm": infra,
             "llm_prod_pm": llm_prod, "monthly": monthly, "opex": opex, "capex": capex, "benefit": benefit,
             "via": via, "nets": nets, "cum": cum, "pv": pv, "npv": npv, "total_cost": total_cost,
@@ -267,6 +282,41 @@ def build() -> None:
             put(te, f"{col}{r}", f"=TCO!{col}4*12*$F${18 + k}", USD)
         put(te, f"E{r}", f"=SUM(B{r}:D{r})", USD)
 
+    te["A29"].value, te["A29"].font = "Measured on OpenAI (token ledger, live rehearsals)", BOLD
+    header(te, 30, ["Measurement", "Value", "Note"])
+    meas = [
+        (31, "Avg LLM cost, P1 / tier-1 incident (gpt-5.4 triage + planner, mini summary)", I["m_p1"], USD4,
+         f"n = {I['m_n'][0]} incidents"),
+        (32, "Avg LLM cost, P2 incident (all gpt-5.4-mini)", I["m_p2"], USD4, f"n = {I['m_n'][1]} incidents"),
+        (33, "Avg LLM cost, semantic-cache hit (summary call only)", I["m_hit"], USD4, f"n = {I['m_n'][2]} incidents"),
+        (34, "Share of input tokens served from the prompt cache", I["m_cached"], PCT, "OpenAI automatic prompt caching"),
+        (35, "Avg triage call on gpt-5.4", I["m_triage_deep"], USD4, "measured per call"),
+        (36, "Avg planner call on gpt-5.4", I["m_planner_deep"], USD4, "measured per call"),
+        (37, "Avg summary call: input tokens", I["m_eval_in"], NUM, "measured on gpt-5.4-mini"),
+        (38, "Avg summary call: output tokens", I["m_eval_out"], NUM, "measured on gpt-5.4-mini"),
+    ]
+    for r, text, v, fmt, note in meas:
+        label(te, f"A{r}", text)
+        put(te, f"B{r}", v, fmt)
+        te[f"C{r}"].value = note
+    label(te, "A39", "gpt-5.4 price $/1M: input / cached input / output")
+    for col, v in zip("BCD", I["oa_deep"], strict=True):
+        put(te, f"{col}39", v, USD2)
+    label(te, "A40", "Summary call on gpt-5.4 (estimate from measured tokens)")
+    put(te, "B40", "=(B37*((1-B34)*B39+B34*C39)+B38*D39)/1000000", USD4)
+
+    header(te, 42, ["OpenAI strategy (measured)", "$ per incident", "vs all-deep"])
+    label(te, "A43", "All gpt-5.4 (no routing, no semantic cache)")
+    put(te, "B43", "=B35+B36+B40", USD4)
+    label(te, "A44", "Tiered routing (gpt-5.4 for P1/tier-1, mini otherwise)")
+    put(te, "B44", "=$B$13*B31+(1-$B$13)*B32", USD4)
+    label(te, "A45", "Tiered routing + semantic cache (as built)", bold=True)
+    put(te, "B45", "=(1-$B$14)*B44+$B$14*B33", USD4, fill=KEY_FILL)
+    for r in (43, 44, 45):
+        put(te, f"C{r}", f"=1-B{r}/$B$43", PCT)
+    te["A46"].value = ("Measured costs already include retries and re-plans that happened, so no overhead "
+                       "multiplier is applied. The Claude rows above are modeled.")
+
     # ---------------- TCO
     tc = wb.create_sheet("TCO")
     tc["A1"].value, tc["A1"].font = "Total cost of ownership", TITLE
@@ -276,7 +326,7 @@ def build() -> None:
     put(tc, "C4", "=B4*(1+Inputs!$B$6)", NUM)
     put(tc, "D4", "=C4*(1+Inputs!$B$6)", NUM)
     lines = [(5, "Infrastructure subtotal", "=SUM(Inputs!{c}28:{c}35)"),
-             (6, "LLM production (all incidents x cost per incident)", "={c}4*'Token Economics'!$F$20"),
+             (6, "LLM production (all incidents x measured cost per incident)", "={c}4*'Token Economics'!$B$45"),
              (7, "LLM evaluation + staging", "=Inputs!$B$17"),
              (8, "Platform maintenance", "=Inputs!{c}16*Inputs!$B$4")]
     for r, text, f in lines:
@@ -350,7 +400,7 @@ def build() -> None:
          '=IF(E6>=0,ROUNDUP(-E5/(D6/12),0),IF(E7>=0,12+ROUNDUP(-E6/(D7/12),0),IF(E8>=0,24+ROUNDUP(-E7/(D8/12),0),"> 36")))',
          "0"),
         (16, "LLM share of 3-year cost", "=(SUM(TCO!B6:D7)*12)/B9", PCT),
-        (17, "LLM cost per incident (as built)", "='Token Economics'!F20", USD4),
+        (17, "LLM cost per incident (as built, measured on OpenAI)", "='Token Economics'!B45", USD4),
         (18, "LLM cost per SRE-minute saved (automated path)", "=B17/Inputs!B11", USD4),
         (19, "SRE hours freed, Y1 / Y3", '=TEXT(Benefits!B13*12,"#,##0")&" h / "&TEXT(Benefits!D13*12,"#,##0")&" h"',
          None),
@@ -401,7 +451,9 @@ def verify(expected: dict) -> None:
         raise KeyError(f"{sheet}!{ref}")
 
     checks = {
-        "cost per incident": (val("TOKEN ECONOMICS", "F20"), expected["cost_per_incident"]),
+        "cost per incident": (val("TOKEN ECONOMICS", "B45"), expected["cost_per_incident"]),
+        "OpenAI all-deep": (val("TOKEN ECONOMICS", "B43"), expected["openai"]["all_deep"]),
+        "Claude modeled": (val("TOKEN ECONOMICS", "F20"), expected["claude_cpi"]),
         "Year 0": (val("TCO", "B17"), expected["capex"]),
         "OPEX Y1": (val("TCO", "B10"), expected["opex"][0]),
         "Benefit Y3": (val("BENEFITS", "D14"), expected["benefit"][2]),

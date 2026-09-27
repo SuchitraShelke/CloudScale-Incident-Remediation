@@ -8,6 +8,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     llm_mode: Literal["scripted", "live"] = "scripted"
+    llm_provider: Literal["anthropic", "openai"] = "anthropic"
+    openai_api_key: str = ""
+    openai_model_deep: str = "gpt-5.4"          # P1 / tier-1 triage + planning
+    openai_model_fast: str = "gpt-5.4-mini"     # P2 + evaluator summaries + failover
+    openai_price_deep: str = ""                 # "input,cached_input,output" $ per 1M tokens
+    openai_price_fast: str = ""
     anthropic_api_key: str = ""
     model_deep: str = "claude-sonnet-5"
     model_fast: str = "claude-haiku-4-5"

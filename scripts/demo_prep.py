@@ -28,11 +28,16 @@ def compose(*args: str) -> subprocess.CompletedProcess:
 
 
 def main() -> int:
-    step("Health")
-    hc = subprocess.run([sys.executable, "scripts/health_check.py"], capture_output=True, text=True, check=False)
+    step("Health (waits up to 2 minutes for services that are still starting)")
+    deadline = time.time() + 120
+    while True:
+        hc = subprocess.run([sys.executable, "scripts/health_check.py"], capture_output=True, text=True, check=False)
+        if hc.returncode == 0 or time.time() > deadline:
+            break
+        time.sleep(5)
     print(hc.stdout.strip())
     if hc.returncode:
-        print("Stack isn't healthy. Try: docker compose up -d  (then re-run this script)")
+        print("Stack isn't healthy after 2 minutes. Try: docker compose up -d  (then re-run this script)")
         return 1
 
     step("Reset breakers and faults")
@@ -54,8 +59,8 @@ def main() -> int:
 
     step("Ready")
     mode = httpx.get(f"{API}/health", timeout=30).json().get("llm_mode")
-    print(f"LLM mode: {mode}" + ("  (Claude calls fall back to scripted if the key is rejected)" if mode == "live"
-                                 else "  (deterministic, offline-safe)"))
+    print(f"LLM mode: {mode}" + ("  (real model: plans can vary between runs; falls back to scripted on errors)"
+                                 if str(mode).startswith("live") else "  (deterministic, offline-safe)"))
     for name, url in (("Console", "http://localhost:8501  (sre1/sre1, lead1/lead1)"), ("Grafana", "http://localhost:3000"),
                       ("Jaeger", "http://localhost:16686"), ("API docs", "http://localhost:8000/docs")):
         print(f"  {name:9} {url}")

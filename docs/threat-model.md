@@ -14,7 +14,7 @@ Status: **Built** means implemented and tested in the prototype; **Designed** me
 | LLM06 | Excessive agency | The Executor's tool access | Per-step gate; READ tokens can't mutate; single-use EXEC tokens bound to step + args hash + approver; OPA default-deny; circuit breaker; budget cap | Built (11/11 live cases) |
 | LLM07 | System prompt leakage | System prompts | Prompts hold no secrets (only public policy, runbooks, schemas); keys live in env/secrets, never in prompts | Built |
 | LLM08 | Vector & embedding weaknesses | Semantic cache | Lookups filtered to the same cloud + namespace + service; similarity ≥ 0.92; confidence capped at 0.79 on a hit; re-bound plan re-validated and re-gated | Built |
-| LLM09 | Misinformation / overreliance | A wrong root cause | Composite confidence capped by deterministic evidence; the Evaluator decides the outcome from metrics, not the LLM; the approval screen shows LLM vs evidence confidence | Built |
+| LLM09 | Misinformation / overreliance | A wrong root cause; a misleading summary | Composite confidence capped by deterministic evidence; the Evaluator decides the outcome from metrics, not the LLM; the approval screen shows LLM vs evidence confidence; the summarizer sees only requested changes and verified metrics (a live run had reported unchanged settings as changes when it saw raw tool output) | Built |
 | LLM10 | Unbounded consumption | Large logs, loops, retries | 8,000-char log cap; `max_tokens` ceilings; $0.50 downgrade / $1.00 stop per incident; rate limit in OPA; one re-plan max; guard budget 20 s | Built |
 
 ## Attack paths walked through

@@ -187,3 +187,37 @@ async def test_after_cooldown_the_plan_runs_and_its_call_is_the_probe_that_close
     await svc.resume(iid, approve(v), wait=True)
     assert (await svc.get(iid))["status"] == "RESOLVED"
     assert await env["redis"].hget("breaker:restart_service:aws", "state") == b"CLOSED"
+
+
+# ---------------------------------------------------------------- live-LLM realism (found in the OpenAI rehearsal)
+def _llm_with_pool(size: int, extra_manual: bool = False):
+    from cloudscale.orchestrator.llm.scripted import ScriptedLLM
+
+    class Planner(ScriptedLLM):
+        async def plan(self, ctx):
+            plan, usage = await super().plan(ctx)
+            for s in plan.steps:
+                if s.call and "patch" in s.call.tool_args and "connection_pool_max_size" in s.call.tool_args["patch"]:
+                    s.call.tool_args["patch"]["connection_pool_max_size"] = size
+            if extra_manual:
+                from cloudscale.common.schemas import RemediationStep
+                plan.steps.append(RemediationStep(step_id="follow-up", kind="manual_runbook",
+                                                  runbook_ref="RB-CACHE-BLOAT"))
+            return plan, usage
+    return Planner()
+
+
+@pytest.mark.parametrize(("pool", "expected"), [(50, "RESOLVED"), (60, "RESOLVED"), (30, "PARTIALLY_RESOLVED")])
+async def test_any_sufficient_fix_recovers_and_an_undersized_one_is_partial(mocked_backends, pool, expected):
+    env = build_env(llm=_llm_with_pool(pool))
+    svc = env["service"]
+    iid = await svc.start("s03-payment-pool", wait=True)
+    await svc.resume(iid, approve(await svc.get(iid), role="senior_sre", approver="lead1"), wait=True)
+    assert (await svc.get(iid))["status"] == expected
+
+
+async def test_manual_step_with_a_detection_runbook_is_rejected_and_replanned(mocked_backends):
+    env = build_env(llm=_llm_with_pool(50, extra_manual=True))
+    v = await env["service"].get(await env["service"].start("s02-cache-bloat", wait=True))
+    assert v["status"] == "ESCALATED" and v["plan_attempts"] == 2          # scripted planner repeats the mistake
+    assert any("manual step must use one of" in e for e in v["validation_errors"])

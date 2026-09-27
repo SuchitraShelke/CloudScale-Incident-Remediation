@@ -21,7 +21,7 @@ flowchart TB
         validate --> gate --> execute --> evaluate --> close
     end
 
-    llm[LLM router: llm/claude.py<br/>Sonnet 5 → Haiku 4.5 → scripted]
+    llm[RoutedLLM: llm/claude.py · llm/openai_llm.py<br/>deep → fast → scripted]
     cache[SemanticCache<br/>cache.py · pgvector]
     tools[ToolClient: tools.py<br/>circuit breaker · READ retries · trace context]
     audit[AuditLog<br/>common/audit.py]
