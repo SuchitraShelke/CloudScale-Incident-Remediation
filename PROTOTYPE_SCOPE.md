@@ -47,7 +47,9 @@ Triggers, most restrictive wins:
 - `risk_level` CRITICAL (derived deterministically from severity + service tier) → ESCALATION
 - MANUAL step → ESCALATION; DESTRUCTIVE without rollback → ESCALATION
 
-## Scenarios (6)
+## Scenarios (6) + reported incidents
+Scenario files are mounted into the containers, so a new file is live without a rebuild. Any other incident can be reported from the console (`POST /incidents/custom`): same pipeline, with a generic simulation built server-side from the report (its metrics and logs, a default deployment, no fix rules).
+
 | # | Scenario | Expected |
 |---|---|---|
 | 1 | OOMKilled `orders-service` pod ($1.5k/min) → hotfix memory + restart | APPROVAL → RESOLVED (fault-injection variant → breaker OPEN → rollback) |

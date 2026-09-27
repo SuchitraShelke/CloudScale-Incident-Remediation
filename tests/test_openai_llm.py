@@ -167,3 +167,20 @@ async def test_plan_that_cannot_be_converted_fails_over_instead_of_crashing():
     client = FakeClient({DEEP: resp(bad), FAST: resp(bad)})
     plan, u = await llm(client).plan({**ctx(), "triage": {}, "validation_errors": []})
     assert u.model == "scripted" and "ValidationError" in u.failover and plan.steps
+
+
+async def test_planner_sees_the_guarded_pod_logs(mocked_backends):
+    """The traffic growth needed to size a pool fix was only in the fetched logs, which the planner didn't get."""
+    from cloudscale.orchestrator.llm.scripted import ScriptedLLM
+    from tests.test_graph import build_env
+
+    seen = {}
+
+    class Spy(ScriptedLLM):
+        async def plan(self, ctx):
+            seen.update(ctx)
+            return await super().plan(ctx)
+
+    env = build_env(llm=Spy())
+    await env["service"].start("s03-payment-pool", wait=True)
+    assert "traffic 2.3x baseline" in seen["logs"]

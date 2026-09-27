@@ -5,4 +5,7 @@ otlp:
   promote_resource_attributes: [service.name, service.namespace]
 storage:
   tsdb:
-    out_of_order_time_window: 30m
+    # The dev VM's clock can jump (WSL2 drift). A sample stamped in the future pushes the head forward and
+    # everything after it is rejected as "too old"; a wider window absorbs small jumps. demo_prep.py resets
+    # Prometheus if its newest sample is more than 5 minutes in the future.
+    out_of_order_time_window: 2h

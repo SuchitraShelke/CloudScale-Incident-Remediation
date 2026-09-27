@@ -34,6 +34,8 @@ A real model plans differently from canned answers. The first live rehearsals fa
 | A manual "follow-up" step on a solvable problem | Needless escalation | `validate_plan` only accepts real manual runbooks (RB-AZ-FAILOVER, RB-ONCALL) → re-plan |
 | A memory hotfix added to a cache problem | Over-remediation | Prompt: least disruptive action that removes the root cause. The gate had already required approval for it |
 | Step ID `"S1"` crashed plan conversion | Pipeline failure | Deterministic normalization; any unconvertible answer counts as a failed answer and fails over |
+| Pool sizes varied run to run (24, 30, 32, 40, 96…) | Unreliable fix sizing | Root cause: **the planner never saw the fetched logs**, which held the traffic growth ("2.3x baseline"). It now gets the same scrubbed, guard-checked evidence as triage. Result: pool 56 (20 × 2.3 × 1.2) on 3/3 runs |
+| A vague "50 % headroom over peak" rule made it compute 251 connections from queued requests and refuse | Prompt rule misapplied | Per-resource guidance: memory ≥ 50 % above usage; pools = current × traffic growth + ~20 %. Memory now 1536Mi on 5/5 runs |
 
 Throughout, the safety layers held: destructive steps always went to a human, and an insufficient fix was never marked RESOLVED.
 

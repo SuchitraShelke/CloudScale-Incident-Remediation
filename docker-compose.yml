@@ -34,6 +34,7 @@ services:
     ports: ["8000:8000"]
     volumes:
       - ./keys:/app/keys:ro                 # signing keypair (scripts/gen_keys.py)
+      - ./mock-data:/app/mock-data:ro       # scenario files: add one and it's live, no rebuild
     networks: [edge, core, tools, data, obs]
     depends_on:
       postgres: { condition: service_healthy }
@@ -53,6 +54,7 @@ services:
       SERVICE_NAME: mcp-server
     volumes:
       - ./keys/signing_public.pem:/app/keys/signing_public.pem:ro   # public key only: can verify, never sign
+      - ./mock-data:/app/mock-data:ro
     networks: [tools, data, obs]
     depends_on:
       redis: { condition: service_healthy }

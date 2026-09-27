@@ -40,6 +40,21 @@ def main() -> int:
         print("Stack isn't healthy after 2 minutes. Try: docker compose up -d  (then re-run this script)")
         return 1
 
+    step("Prometheus clock check")
+    try:
+        head = httpx.get("http://localhost:9090/api/v1/status/tsdb", timeout=10).json()["data"]["headStats"]
+        ahead_min = (head["maxTime"] - time.time() * 1000) / 60000
+    except (httpx.HTTPError, KeyError, ValueError):
+        ahead_min = 0.0
+    if ahead_min > 5:
+        # A VM clock jump stored a future-dated sample; Prometheus now rejects every new one as "too old".
+        print(f"newest sample is {ahead_min:.0f} min in the future: recreating Prometheus (metric history only)")
+        compose("rm", "-sf", "prometheus")
+        compose("up", "-d", "prometheus")
+        time.sleep(10)
+    else:
+        print("ok")
+
     step("Reset breakers and faults")
     print(compose("exec", "-T", "orchestrator", "python", "scripts/fault.py", "reset").stdout.strip())
 

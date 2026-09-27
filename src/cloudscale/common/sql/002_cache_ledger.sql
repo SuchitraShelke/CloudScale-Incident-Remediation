@@ -34,3 +34,7 @@ CREATE TABLE IF NOT EXISTS token_usage (
 );
 CREATE INDEX IF NOT EXISTS token_usage_incident ON token_usage (incident_id);
 CREATE INDEX IF NOT EXISTS token_usage_ts ON token_usage (ts);
+
+-- Order incidents by insertion, not by created_at: the dev VM's clock was corrected by about an hour,
+-- which put earlier incidents "after" later ones.
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS seq BIGSERIAL;

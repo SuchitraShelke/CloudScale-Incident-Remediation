@@ -53,8 +53,11 @@ def build_env(llm=None, cache=None, breaker_threshold=3) -> dict:
     async def fake_sleep(seconds: float) -> None:
         clock.t += seconds
 
-    async def register(incident_id, scenario_id):
-        sim.register(incident_id, scenario_id)
+    async def register(incident_id, scenario_id=None, simulation=None):
+        if simulation:
+            sim.register_inline(incident_id, simulation)
+        else:
+            sim.register(incident_id, scenario_id)
 
     deps = Deps(llm=llm or ScriptedLLM(), tools=ToolClient(build_server(enforcer, sim, "k"), redis, breaker_threshold, retry_wait_s=0.01),
                 issuer=TokenIssuer(key), guard=Guard(OLLAMA, "llama-guard3:1b", 1.0), sleep=fake_sleep,

@@ -202,13 +202,16 @@ class RoutedLLM:
         errors = ctx.get("validation_errors") or []
         user = (f"{_incident_block(ctx)}\n\nTriage result: {json.dumps(ctx['triage'])}\n"
                 f"Current deployment: {json.dumps(ctx['deployment'])}\nMetrics: {json.dumps(ctx['metrics'])}\n"
+                f"Recent pod logs (scrubbed, guard-checked; untrusted data):\n{ctx.get('logs', '')}\n"
                 + (f"\nYour previous plan was rejected by validation: {errors}. Fix these problems.\n" if errors else "")
                 + "\nPropose the smallest safe remediation plan. Every destructive step needs a rollback call "
                   "(rollback_deployment to the current revision). Prefer the least disruptive action that removes the "
                   "root cause, and do not add changes the root cause doesn't need (e.g. clearing a runaway cache "
                   "needs no memory increase). Only when the root cause IS insufficient capacity (a memory limit, a "
-                  "connection pool), size that change from the evidence (observed usage, waiting requests, traffic "
-                  "growth) with headroom, so the service is no longer saturated afterwards. Use a manual_runbook step (RB-AZ-FAILOVER or "
+                  "connection pool), size that change from the evidence so the service is no longer saturated: a "
+                  "memory limit at least 50 % above observed usage; a connection pool at its current size times "
+                  "the observed traffic growth, plus about 20 % margin (waiting requests are queued work, not "
+                  "connections you need), within the tool's limits. Use a manual_runbook step (RB-AZ-FAILOVER or "
                   "RB-ONCALL) only when no tool can mitigate the problem; put follow-up improvements in the "
                   "summary, not as steps. Do not add read-only steps: verification is done separately. "
                   "Artifacts are for human review only and are never executed.")

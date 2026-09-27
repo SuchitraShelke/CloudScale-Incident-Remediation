@@ -56,6 +56,41 @@ async def start_incident(body: StartIncident, request: Request,
     return {"incident_id": incident_id}
 
 
+class ReportedIncident(BaseModel):
+    """What a person types into the report form. Validated by the same strict Incident model as scenario
+    alerts; no simulation or deployment fields exist here, so a report can't script its own success."""
+    model_config = {"extra": "forbid"}
+    title: str
+    severity: Literal["P1", "P2"]
+    alert_name: str
+    affected_service: str
+    namespace: str
+    cloud_provider: Literal["aws", "azure"]
+    cloud_region: str = "us-east-1"
+    telemetry: dict
+    log_excerpt: str
+    tags: list[str] = []
+
+
+@router.post("/incidents/custom", status_code=202)
+async def report_incident(body: ReportedIncident, request: Request, user: User = Depends(CAN_ACT)) -> dict:
+    from pydantic import ValidationError
+
+    from cloudscale.common.schemas import Incident
+    try:
+        incident = Incident.model_validate({**body.model_dump(), "incident_id": "INC-C-new"}).model_dump()
+    except ValidationError as e:
+        def explain(err: dict) -> str:
+            if err["type"] == "string_pattern_mismatch" and err["loc"][0] in ("affected_service", "namespace"):
+                return ("use lowercase letters, digits and dashes, starting and ending with a letter or digit "
+                        "(a Kubernetes name, e.g. notification-worker)")
+            return err["msg"]
+        raise HTTPException(422, [{"field": ".".join(map(str, err["loc"])), "problem": explain(err)}
+                                  for err in e.errors()]) from e
+    incident_id = await request.app.state.service.start_custom(incident, started_by=user.username)
+    return {"incident_id": incident_id}
+
+
 @router.get("/incidents")
 async def list_incidents(request: Request, _: User = Depends(current_user)) -> list[dict]:
     return await request.app.state.service.list()

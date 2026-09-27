@@ -67,10 +67,10 @@ async def lifespan(app: FastAPI):
     redis = aioredis.from_url(s.redis_url)
     sim_base = s.mcp_url.removesuffix("/mcp")
 
-    async def register_sim(incident_id: str, scenario_id: str) -> None:
+    async def register_sim(incident_id: str, scenario_id: str | None = None, simulation: dict | None = None) -> None:
+        body = {"incident_id": incident_id, **({"simulation": simulation} if simulation else {"scenario_id": scenario_id})}
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(f"{sim_base}/sim/register", headers={"x-sim-key": s.sim_control_key},
-                             json={"incident_id": incident_id, "scenario_id": scenario_id})
+            r = await c.post(f"{sim_base}/sim/register", headers={"x-sim-key": s.sim_control_key}, json=body)
             r.raise_for_status()
 
     pool = AsyncConnectionPool(s.postgres_dsn, min_size=1, max_size=5, open=False)

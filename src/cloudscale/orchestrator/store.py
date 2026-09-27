@@ -24,7 +24,7 @@ class PgIncidentStore:
         async with self.pool.connection() as conn:
             rows = await (await conn.execute(
                 "SELECT incident_id, scenario_id, extract(epoch FROM created_at) FROM incidents "
-                "ORDER BY created_at DESC LIMIT 200")).fetchall()
+                "ORDER BY seq DESC LIMIT 200")).fetchall()       # insertion order: immune to clock jumps
         return [{"incident_id": r[0], "scenario_id": r[1], "created_at": float(r[2])} for r in rows]
 
 

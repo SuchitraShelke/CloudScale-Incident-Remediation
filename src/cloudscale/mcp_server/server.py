@@ -95,9 +95,12 @@ def build_server(enforcer: Enforcer, sim: Simulator, sim_control_key: str,
             return JSONResponse({"error": "forbidden"}, status_code=403)
         body = await request.json()
         try:
-            sim.register(body["incident_id"], body["scenario_id"])
+            if "simulation" in body:
+                sim.register_inline(body["incident_id"], body["simulation"])
+            else:
+                sim.register(body["incident_id"], body["scenario_id"])
         except (KeyError, FileNotFoundError) as e:
-            return JSONResponse({"error": f"unknown scenario: {e}"}, status_code=400)
+            return JSONResponse({"error": f"unknown scenario or bad simulation: {e}"}, status_code=400)
         return JSONResponse({"registered": body["incident_id"]})
 
     @mcp.custom_route("/sim/faults", methods=["POST"])

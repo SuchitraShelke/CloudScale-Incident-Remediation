@@ -240,7 +240,9 @@ def build_graph(deps: Deps, checkpointer=None):
                                                 f"{plan.summary}")]}
         ctx = {"incident": state["incident"], "deployment": state["observations"]["deployment"],
                "metrics": state["observations"]["metrics"], "triage": state["triage"],
-               "validation_errors": state.get("validation_errors", []), "spent_usd": _spent(state)}
+               "validation_errors": state.get("validation_errors", []), "spent_usd": _spent(state),
+               # the same guarded evidence triage saw: sizing a fix needs e.g. the traffic growth in the logs
+               "logs": "\n".join(state["observations"]["logs"])}
         try:
             plan, usage = await deps.llm.plan(ctx)
         except BudgetExceeded as e:

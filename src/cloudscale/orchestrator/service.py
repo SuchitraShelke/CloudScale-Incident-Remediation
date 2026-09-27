@@ -28,6 +28,21 @@ ACTORS = {"triage": ("agent", "triage"), "planner": ("agent", "planner"), "execu
           "evaluate": ("agent", "evaluator")}          # everything else: the deterministic supervisor
 
 
+def generic_simulation(incident: dict[str, Any]) -> dict[str, Any]:
+    """Built server-side from the report only: the client can't supply effects or deployment state."""
+    t = incident["telemetry"]
+    svc = incident["affected_service"]
+    return {
+        "deployments": {svc: {"replicas": 3, "revision": 2, "previous_revision": 1, "image_tag": "v1.0.0",
+                              "resources": {"limits": {"memory": "1Gi", "cpu": "1000m"}},
+                              "connection_pool_max_size": 20}},
+        "initial_metrics": {"cpu_usage_pct": t["cpu_usage_pct"], "memory_usage_pct": t["memory_usage_pct"],
+                            "error_rate_pct": t["error_rate_pct"], "p99_ms": t["request_latency_p99_ms"]},
+        "logs": incident["log_excerpt"].splitlines()[-100:],
+        "effects": [],          # unknown incident: nothing is known to fix it
+    }
+
+
 class NullAudit:
     async def append(self, *a, **kw) -> dict:
         return {}
@@ -52,14 +67,26 @@ class IncidentService:
         sc = load_scenario(scenario_id, self.dir)
         incident_id = f"INC-{scenario_id.split('-')[0].upper()}-{uuid.uuid4().hex[:6]}"
         incident = sc.incident.model_copy(update={"incident_id": incident_id}).model_dump()
-        await self.register_sim(incident_id, scenario_id)
-        await self.store.add(incident_id, scenario_id)
+        await self.register_sim(incident_id, scenario_id=scenario_id)
+        return await self._begin(incident, scenario_id, started_by, f"scenario {scenario_id}", wait)
+
+    async def start_custom(self, incident: dict[str, Any], started_by: str, wait: bool = False) -> str:
+        """An incident typed in by a person. Its simulated infrastructure is generic: the reported metrics and
+        logs, a default deployment and no rules for what fixes it, so no fix can be verified as working."""
+        incident_id = f"INC-C-{uuid.uuid4().hex[:6]}"
+        incident = {**incident, "incident_id": incident_id}
+        await self.register_sim(incident_id, simulation=generic_simulation(incident))
+        return await self._begin(incident, "custom", started_by, "the report form", wait)
+
+    async def _begin(self, incident: dict[str, Any], source: str, started_by: str, via: str, wait: bool) -> str:
+        incident_id = incident["incident_id"]
+        await self.store.add(incident_id, source)
         await self.audit.append("INCIDENT_RECEIVED", "human" if started_by != "system" else "system", started_by,
-                                {"scenario_id": scenario_id, "severity": incident["severity"],
+                                {"source": source, "severity": incident["severity"],
                                  "alert_name": incident["alert_name"], "service": incident["affected_service"]},
                                 incident_id)
         initial = {"incident": incident, "status": "RECEIVED",
-                   "events": [event("api", f"Incident received from scenario {scenario_id} (by {started_by})")]}
+                   "events": [event("api", f"Incident received from {via} (by {started_by})")]}
         await self._launch(incident_id, initial, wait)
         return incident_id
 

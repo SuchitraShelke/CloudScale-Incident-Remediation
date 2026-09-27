@@ -41,6 +41,8 @@ To use a real model, set `LLM_MODE=live` plus `LLM_PROVIDER=openai` and `OPENAI_
 | `s05-direct-injection` | Injection in the alert → QUARANTINED before any LLM or tool call | Direct injection |
 | `s06-indirect-injection` | Clean alert, injection in fetched logs → QUARANTINED | Indirect injection |
 
+**New incidents:** as an SRE, open **Report incident** in the console and describe any incident (it's pre-filled with one the system has never seen). It runs through the same pipeline; with no matching runbook its confidence is capped at 0.35, so a senior SRE decides. To add a prepared scenario instead, drop a JSON file into `mock-data/scenarios/`: the folder is mounted, so it's live without a rebuild.
+
 Run one from the terminal: `uv run python scripts/run_scenario.py s02-cache-bloat`. Run everything against its ground truth: `uv run python scripts/rehearse.py --crash`. See the security checks live: `docker compose exec orchestrator python scripts/mcp_smoke.py`.
 
 ## Tests

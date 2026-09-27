@@ -152,6 +152,13 @@ class Simulator:
         sc = load_scenario(scenario_id, self.dir)
         self.incidents[incident_id] = IncidentSim(scenario_id, sc.simulation, self.clock)
 
+    def register_inline(self, incident_id: str, simulation: dict[str, Any]) -> None:
+        """A reported (non-scenario) incident: the orchestrator builds a generic simulation from the alert."""
+        for key in ("deployments", "initial_metrics", "logs", "effects"):
+            if key not in simulation:
+                raise KeyError(key)
+        self.incidents[incident_id] = IncidentSim("custom", simulation, self.clock)
+
     def get(self, incident_id: str) -> IncidentSim:
         if incident_id not in self.incidents:
             raise SimulatedToolFailure(f"incident {incident_id!r} not registered with the simulator")

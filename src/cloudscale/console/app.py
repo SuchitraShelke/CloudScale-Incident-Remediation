@@ -71,7 +71,8 @@ with st.sidebar:
     if st.button("Log out", key="logout"):
         st.session_state.clear()
         st.rerun()
-    page = st.radio("View", ["Incidents", "Approvals", "Metrics", "Audit log"], key="page")
+    views = ["Incidents", "Approvals", "Metrics", "Audit log"] + (["Report incident"] if can_act else [])
+    page = st.radio("View", views, key="page")
     st.divider()
     if can_act:
         scenarios = ok(api("GET", "/scenarios")) or []
@@ -235,6 +236,50 @@ def metrics_page() -> None:
                "(search tag `incident.id=<id>`)")
 
 
+EXAMPLE_LOG = (
+    "2026-09-27T09:41:02Z WARN notification-worker: consumer lag 1,203,448 messages on topic notifications\n"
+    "2026-09-27T09:41:05Z INFO notification-worker: consumer group rebalancing (3rd time in 5 min)\n"
+    "2026-09-27T09:41:31Z ERROR notification-worker: send failed for batch 88213: upstream SMTP relay timeout")
+
+
+def report_page() -> None:
+    st.subheader("Report an incident")
+    st.caption("For an incident that isn't one of the prepared scenarios. It runs through the same pipeline: guard, "
+               "triage, planning and the gate. Its infrastructure is simulated generically from what you enter, "
+               "with no known fix, so the system can diagnose and propose, but can't prove a fix worked.")
+    with st.form("report", clear_on_submit=False):
+        c1, c2 = st.columns(2)
+        title = c1.text_input("Title", "Notification queue backlog growing", key="r_title")
+        alert = c2.text_input("Alert name", "KafkaConsumerLagHigh", key="r_alert")
+        c1, c2, c3, c4 = st.columns(4)
+        service = c1.text_input("Service (lowercase, dashes)", "notification-worker", key="r_service")
+        namespace = c2.text_input("Namespace", "messaging", key="r_ns")
+        cloud = c3.selectbox("Cloud", ["aws", "azure"], key="r_cloud")
+        severity = c4.selectbox("Severity", ["P2", "P1"], key="r_sev")
+        c1, c2, c3, c4 = st.columns(4)
+        cpu = c1.number_input("CPU %", 0.0, 100.0, 35.0, key="r_cpu")
+        mem = c2.number_input("Memory %", 0.0, 100.0, 60.0, key="r_mem")
+        err = c3.number_input("Error rate %", 0.0, 100.0, 4.2, key="r_err")
+        p99 = c4.number_input("p99 latency (ms)", 0.0, 120000.0, 2600.0, key="r_p99")
+        logs = st.text_area("Log lines (untrusted: they go through the guard)", EXAMPLE_LOG, height=140, key="r_logs")
+        submitted = st.form_submit_button("Submit incident", type="primary")
+    if submitted:
+        body = {"title": title, "severity": severity, "alert_name": alert, "affected_service": service.strip(),
+                "namespace": namespace.strip(), "cloud_provider": cloud,
+                "cloud_region": "us-east-1" if cloud == "aws" else "westeurope",
+                "telemetry": {"source": "prometheus", "cpu_usage_pct": cpu, "memory_usage_pct": mem,
+                              "error_rate_pct": err, "request_latency_p99_ms": p99, "pod_restarts_last_1h": 0},
+                "log_excerpt": logs}
+        r = api("POST", "/incidents/custom", json=body)
+        if r.status_code == 422 and isinstance(r.json().get("detail"), list):
+            for problem in r.json()["detail"]:
+                st.error(f"{problem.get('field', 'input')}: {problem.get('problem', problem)}")
+        elif (res := ok(r)) is not None:
+            st.session_state.selected = res["incident_id"]
+            st.success(f"Started {res['incident_id']}. Open **Incidents** to follow it; it will appear in "
+                       "**Approvals** if it needs a decision.")
+
+
 def audit_page() -> None:
     c1, c2 = st.columns([1, 3])
     if c1.button("Verify chain", type="primary", key="verify"):
@@ -252,4 +297,5 @@ def audit_page() -> None:
                  hide_index=True, width="stretch")
 
 
-{"Incidents": incidents_page, "Approvals": approvals_page, "Metrics": metrics_page, "Audit log": audit_page}[page]()
+{"Incidents": incidents_page, "Approvals": approvals_page, "Metrics": metrics_page, "Audit log": audit_page,
+ "Report incident": report_page}[page]()
