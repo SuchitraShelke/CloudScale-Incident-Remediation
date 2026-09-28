@@ -66,6 +66,8 @@ docker run --rm -v "${PWD}\opa:/work:ro" openpolicyagent/opa:latest test /work/p
 | 3-year TCO / ROI + token economics | [`docs/financial/tco-roi-model.md`](docs/financial/tco-roi-model.md), [`.xlsx`](docs/financial/tco-roi-model.xlsx) |
 | Jury demo script, fallbacks, likely questions | [`docs/demo-script.md`](docs/demo-script.md) |
 | Scenario data: what each JSON block holds, who may read it, and why | [`docs/scenario-data.md`](docs/scenario-data.md) |
+| OPA: the policy check on every tool call, rule by rule | [`docs/opa-policy.md`](docs/opa-policy.md) |
+| Data stores: what Postgres (+ pgvector) and Redis each hold, and why | [`docs/data-stores.md`](docs/data-stores.md) |
 | Target architecture (blueprint) | [`CapstoneProjectPlan_v2.md`](CapstoneProjectPlan_v2.md) |
 
 ## Built vs designed
