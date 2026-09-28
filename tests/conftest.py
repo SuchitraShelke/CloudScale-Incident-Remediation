@@ -21,7 +21,10 @@ OLLAMA = "http://ollama.test:11434"
 
 ADMIN_DSN = "postgresql://cloudscale:cloudscale@127.0.0.1:5432/cloudscale"
 TEST_DSN = "postgresql://cloudscale:cloudscale@127.0.0.1:5432/cloudscale_test"
-AUDIT_DSN = "postgresql://audit_writer:audit-test@127.0.0.1:5432/cloudscale_test"
+# Roles are cluster-wide in Postgres, shared by every database on the server. Tests must use their own role:
+# reusing `audit_writer` here reset the live app's password and hung every incident at its first audit write.
+AUDIT_ROLE = "audit_writer_test"
+AUDIT_DSN = f"postgresql://{AUDIT_ROLE}:audit-test@127.0.0.1:5432/cloudscale_test"
 
 
 def _pg_available() -> bool:
@@ -46,7 +49,7 @@ async def clean_db(pg):
     """Fresh schema per test: drop tables as the owner (the triggers block TRUNCATE by design)."""
     async with await psycopg.AsyncConnection.connect(pg, autocommit=True) as conn:
         await conn.execute("DROP TABLE IF EXISTS audit_log, incidents, semantic_cache, token_usage")
-    await migrate(pg, "audit_writer", "audit-test")
+    await migrate(pg, AUDIT_ROLE, "audit-test")
     return pg
 
 
