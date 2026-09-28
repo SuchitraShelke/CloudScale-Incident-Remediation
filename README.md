@@ -65,6 +65,7 @@ docker run --rm -v "${PWD}\opa:/work:ro" openpolicyagent/opa:latest test /work/p
 | Threat model: OWASP LLM Top 10 (2025) | [`docs/threat-model.md`](docs/threat-model.md) |
 | 3-year TCO / ROI + token economics | [`docs/financial/tco-roi-model.md`](docs/financial/tco-roi-model.md), [`.xlsx`](docs/financial/tco-roi-model.xlsx) |
 | Jury demo script, fallbacks, likely questions | [`docs/demo-script.md`](docs/demo-script.md) |
+| Scenario data: what each JSON block holds, who may read it, and why | [`docs/scenario-data.md`](docs/scenario-data.md) |
 | Target architecture (blueprint) | [`CapstoneProjectPlan_v2.md`](CapstoneProjectPlan_v2.md) |
 
 ## Built vs designed
